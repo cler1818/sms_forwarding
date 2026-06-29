@@ -62,6 +62,55 @@ void logCaptureLn(const char* msg) {
   _logCommit();
 }
 
+static String htmlEscape(const String& input) {
+  String output = input;
+  output.replace("&", "&amp;");
+  output.replace("\"", "&quot;");
+  output.replace("<", "&lt;");
+  output.replace(">", "&gt;");
+  return output;
+}
+
+static String twoDigits(uint8_t value) {
+  char buf[3];
+  snprintf(buf, sizeof(buf), "%02u", (unsigned int)value);
+  return String(buf);
+}
+
+static String scheduledSmsTypeName(ScheduledSmsType type) {
+  if (type == SCHEDULE_SMS_WEEKLY) return "每周";
+  if (type == SCHEDULE_SMS_MONTHLY) return "每月";
+  return "每天";
+}
+
+static String scheduledSmsWeekdayName(uint8_t weekday) {
+  switch (weekday) {
+    case 1: return "周一";
+    case 2: return "周二";
+    case 3: return "周三";
+    case 4: return "周四";
+    case 5: return "周五";
+    case 6: return "周六";
+    case 7: return "周日";
+    default: return "周一";
+  }
+}
+
+static String scheduledSmsStatusText() {
+  const ScheduledSmsConfig& scheduled = config.scheduledSms;
+  if (!scheduled.enabled) return "未启用";
+  if (scheduled.phone.length() == 0 || scheduled.content.length() == 0) return "已启用，但号码或内容未填写";
+
+  String text = scheduledSmsTypeName(scheduled.type);
+  if (scheduled.type == SCHEDULE_SMS_WEEKLY) {
+    text += scheduledSmsWeekdayName(scheduled.weekday);
+  } else if (scheduled.type == SCHEDULE_SMS_MONTHLY) {
+    text += String(scheduled.monthDay) + "日";
+  }
+  text += " " + twoDigits(scheduled.hour) + ":" + twoDigits(scheduled.minute) + " 北京时间发送";
+  return text;
+}
+
 // 检查HTTP Basic认证
 bool checkAuth() {
   if (!server.authenticate(config.webUser.c_str(), config.webPass.c_str())) {
@@ -92,6 +141,15 @@ void handleRoot() {
   html.replace("%SMTP_SEND_TO%", config.smtpSendTo);
   html.replace("%ADMIN_PHONE%", config.adminPhone);
   html.replace("%NUMBER_BLACK_LIST%", config.numberBlackList);
+  html.replace("%SCHEDULE_SMS_ENABLED_CHECKED%", config.scheduledSms.enabled ? " checked" : "");
+  html.replace("%SCHEDULE_SMS_TYPE%", String((int)config.scheduledSms.type));
+  html.replace("%SCHEDULE_SMS_PHONE%", htmlEscape(config.scheduledSms.phone));
+  html.replace("%SCHEDULE_SMS_CONTENT%", htmlEscape(config.scheduledSms.content));
+  html.replace("%SCHEDULE_SMS_HOUR%", String(config.scheduledSms.hour));
+  html.replace("%SCHEDULE_SMS_MINUTE%", String(config.scheduledSms.minute));
+  html.replace("%SCHEDULE_SMS_WEEKDAY%", String(config.scheduledSms.weekday));
+  html.replace("%SCHEDULE_SMS_MONTHDAY%", String(config.scheduledSms.monthDay));
+  html.replace("%SCHEDULE_SMS_STATUS%", scheduledSmsStatusText());
 
   // 概览页面的配置状态
   bool emailOk = config.smtpServer.length() > 0 && config.smtpUser.length() > 0 &&
@@ -884,6 +942,63 @@ void handleSave() {
   }
   if (server.hasArg("numberBlackList")) {
     config.numberBlackList = server.arg("numberBlackList");
+  }
+
+  // 定时短信表单：只在该表单提交时更新
+  if (server.hasArg("scheduledSmsForm")) {
+    bool oldEnabled = config.scheduledSms.enabled;
+    ScheduledSmsType oldType = config.scheduledSms.type;
+    String oldPhone = config.scheduledSms.phone;
+    String oldContent = config.scheduledSms.content;
+    uint8_t oldHour = config.scheduledSms.hour;
+    uint8_t oldMinute = config.scheduledSms.minute;
+    uint8_t oldWeekday = config.scheduledSms.weekday;
+    uint8_t oldMonthDay = config.scheduledSms.monthDay;
+
+    String phone = server.arg("scheduledSmsPhone");
+    String content = server.arg("scheduledSmsContent");
+    phone.trim();
+    content.trim();
+
+    int scheduleType = server.arg("scheduledSmsType").toInt();
+    if (scheduleType < SCHEDULE_SMS_DAILY || scheduleType > SCHEDULE_SMS_MONTHLY) scheduleType = SCHEDULE_SMS_DAILY;
+
+    int hour = server.arg("scheduledSmsHour").toInt();
+    if (hour < 0) hour = 0;
+    if (hour > 23) hour = 23;
+
+    int minute = server.arg("scheduledSmsMinute").toInt();
+    if (minute < 0) minute = 0;
+    if (minute > 59) minute = 59;
+
+    int weekday = server.arg("scheduledSmsWeekday").toInt();
+    if (weekday < 1) weekday = 1;
+    if (weekday > 7) weekday = 7;
+
+    int monthDay = server.arg("scheduledSmsMonthDay").toInt();
+    if (monthDay < 1) monthDay = 1;
+    if (monthDay > 31) monthDay = 31;
+
+    config.scheduledSms.enabled = server.arg("scheduledSmsEnabled") == "on";
+    config.scheduledSms.type = (ScheduledSmsType)scheduleType;
+    config.scheduledSms.phone = phone;
+    config.scheduledSms.content = content;
+    config.scheduledSms.hour = (uint8_t)hour;
+    config.scheduledSms.minute = (uint8_t)minute;
+    config.scheduledSms.weekday = (uint8_t)weekday;
+    config.scheduledSms.monthDay = (uint8_t)monthDay;
+
+    bool changed = oldEnabled != config.scheduledSms.enabled ||
+                   oldType != config.scheduledSms.type ||
+                   oldPhone != config.scheduledSms.phone ||
+                   oldContent != config.scheduledSms.content ||
+                   oldHour != config.scheduledSms.hour ||
+                   oldMinute != config.scheduledSms.minute ||
+                   oldWeekday != config.scheduledSms.weekday ||
+                   oldMonthDay != config.scheduledSms.monthDay;
+    if (changed) {
+      config.scheduledSms.lastRunDayKey = 0;
+    }
   }
 
   // 推送通道配置：只在对应通道的字段存在时更新

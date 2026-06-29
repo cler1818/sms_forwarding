@@ -13,6 +13,15 @@ void saveConfig() {
   preferences.putString("webUser", config.webUser);
   preferences.putString("webPass", config.webPass);
   preferences.putString("numBlkList", config.numberBlackList);
+  preferences.putBool("schedEn", config.scheduledSms.enabled);
+  preferences.putUChar("schedType", (uint8_t)config.scheduledSms.type);
+  preferences.putString("schedPhone", config.scheduledSms.phone);
+  preferences.putString("schedContent", config.scheduledSms.content);
+  preferences.putUChar("schedHour", config.scheduledSms.hour);
+  preferences.putUChar("schedMinute", config.scheduledSms.minute);
+  preferences.putUChar("schedWeekday", config.scheduledSms.weekday);
+  preferences.putUChar("schedMonthDay", config.scheduledSms.monthDay);
+  preferences.putUInt("schedLastRun", config.scheduledSms.lastRunDayKey);
   
   // 保存推送通道配置
   for (int i = 0; i < MAX_PUSH_CHANNELS; i++) {
@@ -42,6 +51,21 @@ void loadConfig() {
   config.webUser = preferences.getString("webUser", DEFAULT_WEB_USER);
   config.webPass = preferences.getString("webPass", DEFAULT_WEB_PASS);
   config.numberBlackList = preferences.getString("numBlkList", "");
+  config.scheduledSms.enabled = preferences.getBool("schedEn", false);
+  config.scheduledSms.type = (ScheduledSmsType)preferences.getUChar("schedType", SCHEDULE_SMS_DAILY);
+  config.scheduledSms.phone = preferences.getString("schedPhone", "");
+  config.scheduledSms.content = preferences.getString("schedContent", "");
+  config.scheduledSms.hour = preferences.getUChar("schedHour", 9);
+  config.scheduledSms.minute = preferences.getUChar("schedMinute", 0);
+  config.scheduledSms.weekday = preferences.getUChar("schedWeekday", 1);
+  config.scheduledSms.monthDay = preferences.getUChar("schedMonthDay", 1);
+  config.scheduledSms.lastRunDayKey = preferences.getUInt("schedLastRun", 0);
+
+  if (config.scheduledSms.type > SCHEDULE_SMS_MONTHLY) config.scheduledSms.type = SCHEDULE_SMS_DAILY;
+  if (config.scheduledSms.hour > 23) config.scheduledSms.hour = 9;
+  if (config.scheduledSms.minute > 59) config.scheduledSms.minute = 0;
+  if (config.scheduledSms.weekday < 1 || config.scheduledSms.weekday > 7) config.scheduledSms.weekday = 1;
+  if (config.scheduledSms.monthDay < 1 || config.scheduledSms.monthDay > 31) config.scheduledSms.monthDay = 1;
   
   // 加载推送通道配置
   for (int i = 0; i < MAX_PUSH_CHANNELS; i++) {

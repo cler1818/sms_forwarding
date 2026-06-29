@@ -9,6 +9,7 @@
 #include "web_handlers.h"
 #include "sms_process.h"
 #include "web_handlers.h"
+#include "scheduler.h"
 
 void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
@@ -115,4 +116,5 @@ void loop() {
   checkConcatTimeout();
   if (Serial.available()) Serial1.write(Serial.read());
   checkSerial1URC();
+  checkScheduledSms();
 }

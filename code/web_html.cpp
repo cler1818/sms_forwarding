@@ -341,6 +341,58 @@ const char* htmlPage = R"rawliteral(
           </form>
         </div>
       </div>
+      <div class="card">
+        <div class="card-header">⏱ 定时发送</div>
+        <div class="card-body">
+          <form action="/save" method="POST">
+            <input type="hidden" name="scheduledSmsForm" value="1">
+            <div class="form-group">
+              <label class="label-inline"><input type="checkbox" name="scheduledSmsEnabled" id="scheduledSmsEnabled"%SCHEDULE_SMS_ENABLED_CHECKED% onchange="updateScheduleFields()"> 启用定时发送</label>
+              <p class="form-hint">当前状态：%SCHEDULE_SMS_STATUS%</p>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label">周期</label>
+                <select class="form-select" name="scheduledSmsType" id="scheduledSmsType" data-value="%SCHEDULE_SMS_TYPE%" onchange="updateScheduleFields()">
+                  <option value="0">每天</option>
+                  <option value="1">每周</option>
+                  <option value="2">每月</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">发送时间</label>
+                <div class="form-row" style="gap:8px;">
+                  <div class="form-group"><input class="form-input" type="number" name="scheduledSmsHour" value="%SCHEDULE_SMS_HOUR%" min="0" max="23" placeholder="8"></div>
+                  <div class="form-group"><input class="form-input" type="number" name="scheduledSmsMinute" value="%SCHEDULE_SMS_MINUTE%" min="0" max="59" placeholder="30"></div>
+                </div>
+                <p class="form-hint">按北京时间执行，格式为时 / 分</p>
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group" id="scheduledWeekdayGroup">
+                <label class="form-label">星期</label>
+                <select class="form-select" name="scheduledSmsWeekday" id="scheduledSmsWeekday" data-value="%SCHEDULE_SMS_WEEKDAY%">
+                  <option value="1">周一</option>
+                  <option value="2">周二</option>
+                  <option value="3">周三</option>
+                  <option value="4">周四</option>
+                  <option value="5">周五</option>
+                  <option value="6">周六</option>
+                  <option value="7">周日</option>
+                </select>
+              </div>
+              <div class="form-group" id="scheduledMonthDayGroup">
+                <label class="form-label">日期</label>
+                <input class="form-input" type="number" name="scheduledSmsMonthDay" value="%SCHEDULE_SMS_MONTHDAY%" min="1" max="31" placeholder="1">
+                <p class="form-hint">若当月没有该日期，则在当月最后一天发送</p>
+              </div>
+            </div>
+            <div class="form-group"><label class="form-label">目标号码</label><input class="form-input" type="text" name="scheduledSmsPhone" value="%SCHEDULE_SMS_PHONE%" placeholder="13800138000"></div>
+            <div class="form-group"><label class="form-label">短信内容</label><textarea class="form-textarea" name="scheduledSmsContent" placeholder="输入定时发送内容..." oninput="updateCount(this,'scheduleCharCount')">%SCHEDULE_SMS_CONTENT%</textarea><p class="form-hint">已输入 <span id="scheduleCharCount">0</span> 字符；启用后设备会在到点时自动发送</p></div>
+            <button type="submit" class="btn btn-primary" style="padding:9px 18px;">保存定时配置</button>
+          </form>
+        </div>
+      </div>
     </div>
 
     <!-- ===== Diagnostics ===== -->
@@ -487,10 +539,31 @@ const char* htmlPage = R"rawliteral(
     }
     document.addEventListener('DOMContentLoaded', function() {
       for (var i = 0; i < 5; i++) { toggleChannel(i); updateTypeHint(i); }
+      var scheduleType = document.getElementById('scheduledSmsType');
+      var scheduleWeekday = document.getElementById('scheduledSmsWeekday');
+      if (scheduleType) scheduleType.value = scheduleType.dataset.value || '0';
+      if (scheduleWeekday) scheduleWeekday.value = scheduleWeekday.dataset.value || '1';
+      updateScheduleFields();
+      var manualSms = document.querySelector('textarea[name="content"]');
+      var scheduledSms = document.querySelector('textarea[name="scheduledSmsContent"]');
+      if (manualSms) updateCount(manualSms);
+      if (scheduledSms) updateCount(scheduledSms, 'scheduleCharCount');
     });
 
     // ---- Send SMS ----
-    function updateCount(el) { document.getElementById('charCount').textContent = el.value.length; }
+    function updateCount(el, targetId) {
+      var target = document.getElementById(targetId || 'charCount');
+      if (target) target.textContent = el.value.length;
+    }
+    function updateScheduleFields() {
+      var typeEl = document.getElementById('scheduledSmsType');
+      if (!typeEl) return;
+      var type = typeEl.value;
+      var weekdayGroup = document.getElementById('scheduledWeekdayGroup');
+      var monthDayGroup = document.getElementById('scheduledMonthDayGroup');
+      if (weekdayGroup) weekdayGroup.style.display = type === '1' ? '' : 'none';
+      if (monthDayGroup) monthDayGroup.style.display = type === '2' ? '' : 'none';
+    }
 
     // ---- Query ----
     function queryInfo(type) {

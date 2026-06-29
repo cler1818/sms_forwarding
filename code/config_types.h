@@ -21,6 +21,26 @@ enum PushType {
 // 最大推送通道数
 #define MAX_PUSH_CHANNELS 5
 
+// 定时短信周期
+enum ScheduledSmsType {
+  SCHEDULE_SMS_DAILY = 0,    // 每天
+  SCHEDULE_SMS_WEEKLY = 1,   // 每周
+  SCHEDULE_SMS_MONTHLY = 2   // 每月
+};
+
+// 定时短信配置
+struct ScheduledSmsConfig {
+  bool enabled;
+  ScheduledSmsType type;
+  String phone;
+  String content;
+  uint8_t hour;
+  uint8_t minute;
+  uint8_t weekday;      // 1=周一, 7=周日
+  uint8_t monthDay;     // 1-31，超过当月天数时按月末处理
+  uint32_t lastRunDayKey;
+};
+
 // 推送通道配置（通用设计，支持多种推送方式）
 struct PushChannel {
   bool enabled;           // 是否启用
@@ -44,6 +64,7 @@ struct Config {
   String webUser;      // Web管理账号
   String webPass;      // Web管理密码
   String numberBlackList;  // 号码黑名单（换行符分隔）
+  ScheduledSmsConfig scheduledSms;  // 定时短信
 };
 
 // 默认Web管理账号密码
