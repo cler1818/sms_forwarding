@@ -9,6 +9,135 @@
 #include "web_handlers.h"
 #include "sms_process.h"
 #include "web_handlers.h"
+#include "scheduler.h"
+
+void syncNtpTime() {
+  logCaptureLn(String("NTP sync..."));
+  configTime(0, 0, "ntp.ntsc.ac.cn", "ntp.aliyun.com", "pool.ntp.org");
+  int ntpRetry = 0;
+  while (time(nullptr) < 100000 && ntpRetry < 100) {
+    delay(1);
+    server.handleClient();
+    ntpRetry++;
+  }
+  if (time(nullptr) >= 100000) {
+    timeSynced = true;
+    logCaptureLn(String("NTP OK"));
+    time_t now = time(nullptr);
+    logCapture(String("UTC: "));
+    logCaptureLn(String(now));
+  } else {
+    logCaptureLn(String("NTP fail"));
+  }
+}
+
+void finishNetworkStartup() {
+  configValid = isConfigValid();
+  syncNtpTime();
+  ssl_client.setInsecure();
+  digitalWrite(LED_BUILTIN, LOW);
+
+  if (configValid) {
+    logCaptureLn(String("Send boot notice"));
+    String subject = "开机";
+    String body = getSystemOverview();
+    sendNotifyAll(subject.c_str(), body.c_str());
+  }
+
+}
+
+bool connectWifiCredential(const String& ssid, const String& pass, const String& label) {
+  if (ssid.length() == 0) return false;
+
+  logCaptureLn(String("WiFi try ") + label + ": " + ssid);
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);
+  WiFi.setAutoReconnect(true);
+  WiFi.setScanMethod(WIFI_FAST_SCAN);
+  WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
+  if (pass.length()) WiFi.begin(ssid.c_str(), pass.c_str());
+  else WiFi.begin(ssid.c_str());
+
+  unsigned long start = millis();
+  const unsigned long WIFI_TIMEOUT = 15000;
+  while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_TIMEOUT) {
+    blink_short(200);
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    logCaptureLn(String("WiFi OK"));
+    logCapture(String("IP: "));
+    logCaptureLn(WiFi.localIP().toString());
+    logCapture(String("RSSI: "));
+    logCaptureLn(String(WiFi.RSSI()) + " dBm");
+    inApConfigMode = false;
+    return true;
+  }
+
+  logCaptureLn(String("WiFi fail: ") + ssid);
+  WiFi.disconnect(false);
+  delay(200);
+  return false;
+}
+
+bool connectSavedWifis() {
+  return connectWifiCredential(config.wifiSsid, config.wifiPass, "main") ||
+         connectWifiCredential(config.wifiBackupSsid1, config.wifiBackupPass1, "A") ||
+         connectWifiCredential(config.wifiBackupSsid2, config.wifiBackupPass2, "B");
+}
+
+void enterApConfigMode() {
+  logCaptureLn(String("AP mode"));
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  delay(100);
+
+  String mac = WiFi.macAddress();
+  int n = WiFi.scanNetworks();
+  scannedWifiListHtml = "";
+  for (int i = 0; i < n; ++i) {
+    String ssid = WiFi.SSID(i);
+    String optionValue = ssid;
+    optionValue.replace("&", "&amp;");
+    optionValue.replace("\"", "&quot;");
+    String optionText = optionValue;
+    scannedWifiListHtml += "<option value=\"" + optionValue + "\">" + optionText + "</option>";
+  }
+  if (n <= 0) {
+    scannedWifiListHtml = "<option value=\"\" disabled>未扫描到WiFi</option>";
+  }
+  WiFi.scanDelete();
+
+  WiFi.mode(WIFI_AP);
+  delay(500);
+  IPAddress apIP(192, 168, 4, 1);
+  WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
+
+  String macSuffix = mac.substring(mac.length() - 5);
+  macSuffix.replace(":", "");
+  String apSsid = "SMS_Forwarder_" + macSuffix;
+  bool apSuccess = WiFi.softAP(apSsid.c_str(), "12345678");
+  WiFi.setTxPower(WIFI_POWER_8_5dBm);
+
+  if (apSuccess) {
+    logCaptureLn(String("AP: ") + apSsid);
+    logCaptureLn(String("AP ") + WiFi.softAPIP().toString());
+  } else {
+    logCaptureLn(String("AP fail"));
+  }
+  inApConfigMode = true;
+}
+
+bool attemptWifiConnection() {
+  WiFi.softAPdisconnect(true);
+  inApConfigMode = false;
+  if (connectSavedWifis()) {
+    finishNetworkStartup();
+    return true;
+  }
+  enterApConfigMode();
+  return false;
+}
 
 void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
@@ -19,44 +148,18 @@ void setup() {
   Serial1.begin(115200, SERIAL_8N1, RXD, TXD);
   Serial1.setRxBufferSize(SERIAL_BUFFER_SIZE);
   while (Serial1.available()) Serial1.read();
-  modemPowerCycle();
-  while (Serial1.available()) Serial1.read();
+  pinMode(MODEM_EN_PIN, OUTPUT);
+  digitalWrite(MODEM_EN_PIN, HIGH);
   initConcatBuffer();
   loadConfig();
-  configValid = isConfigValid();
+  configValid = false;
 
   // ---- WiFi 连接优化 ----
-  WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);                    // 关闭 Modem Sleep，提高连接响应速度
-  WiFi.setAutoReconnect(true);             // 断线后自动重连
-  // 使用快速扫描而非全信道扫描（全信道扫描在空信道上等待超时极慢）
-  // 首次连接成功后 ESP32 会自动记住信道，下次启动更快
-  WiFi.setScanMethod(WIFI_FAST_SCAN);
-  WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  logCaptureLn(String("连接wifi: ") + String(WIFI_SSID));
-
-  // 带超时的等待连接，失败则重启重试
-  unsigned long wifiStart = millis();
-  const unsigned long WIFI_TIMEOUT = 20000; // 20秒超时
-  while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < WIFI_TIMEOUT) {
-    blink_short(200);
-  }
-
-  if (WiFi.status() == WL_CONNECTED) {
-    logCaptureLn(String("wifi已连接"));
-    logCapture(String("IP地址: "));
-    logCaptureLn(WiFi.localIP().toString());
-    logCapture(String("信号强度(RSSI): "));
-    logCaptureLn(String(WiFi.RSSI()) + " dBm");
-  } else {
-    logCaptureLn(String("⚠️ WiFi连接超时，即将重启重试..."));
-    delay(1000);
-    ESP.restart();
-  }
+  // WiFi 在 HTTP 路由注册后连接，连接失败会进入热点配网模式。
 
   server.on("/", handleRoot);
   server.on("/save", HTTP_POST, handleSave);
+  server.on("/save_wifi", HTTP_POST, handleSaveWifi);
   server.on("/tools", handleRoot);
   server.on("/sms", handleRoot);
   server.on("/sendsms", HTTP_POST, handleSendSms);
@@ -67,46 +170,43 @@ void setup() {
   server.on("/log", handleLog);
   server.on("/modem", handleModem);
   server.on("/wifi", handleWifi);
-  server.begin();
-  logCaptureLn(String("HTTP服务器已启动"));
+  server.onNotFound(handleRoot);
 
-  // ---- NTP 时间同步 ----
-  logCaptureLn(String("正在同步NTP时间..."));
-  configTime(0, 0, "ntp.ntsc.ac.cn", "ntp.aliyun.com", "pool.ntp.org");
-  int ntpRetry = 0;
-  while (time(nullptr) < 100000 && ntpRetry < 100) {
-    delay(1);
-    server.handleClient();
-    ntpRetry++;
-  }
-  if (time(nullptr) >= 100000) {
-    timeSynced = true;
-    logCaptureLn(String("NTP时间同步成功"));
-    time_t now = time(nullptr);
-    logCapture(String("当前UTC时间戳: "));
-    logCaptureLn(String(now));
+  bool wifiConnected = false;
+  if (config.wifiSsid.length() == 0 &&
+      config.wifiBackupSsid1.length() == 0 &&
+      config.wifiBackupSsid2.length() == 0) {
+    logCaptureLn(String("No WiFi"));
+    enterApConfigMode();
+  } else if (connectSavedWifis()) {
+    wifiConnected = true;
   } else {
-    logCaptureLn(String("NTP时间同步失败，将使用设备时间"));
+    enterApConfigMode();
   }
 
-  ssl_client.setInsecure();
-  digitalWrite(LED_BUILTIN, LOW);
+  server.begin();
+  logCaptureLn(String("HTTP OK"));
 
-  // ---- 启动通知（网页已可用，发邮件不会影响用户访问） ----
-  if (configValid) {
-    logCaptureLn(String("配置有效，发送启动通知..."));
-    String subject = "短信转发器已启动";
-    String body = "设备已启动\n设备地址: " + getDeviceUrl();
-    sendEmailNotification(subject.c_str(), body.c_str());
+  if (wifiConnected) {
+    finishNetworkStartup();
   }
-
-  // ---- 模组初始化（较慢，但网页已可访问） ----
-  modemInit();
 }
 
 void loop() {
   server.handleClient();
-  if (!configValid) {
+  if (wifiConfigSubmitted && millis() - wifiConfigSubmittedTime > 1000) {
+    wifiConfigSubmitted = false;
+    attemptWifiConnection();
+  }
+  static unsigned long lastWifiRecoveryTime = 0;
+  if (!inApConfigMode && WiFi.status() != WL_CONNECTED && millis() - lastWifiRecoveryTime > 60000) {
+    lastWifiRecoveryTime = millis();
+    logCaptureLn(String("WiFi lost, retry"));
+    if (!connectSavedWifis()) {
+      enterApConfigMode();
+    }
+  }
+  if (!inApConfigMode && !configValid) {
     if (millis() - lastPrintTime >= 1000) {
       lastPrintTime = millis();
       logCaptureLn(String("⚠️ 请访问 " + getDeviceUrl() + " 配置系统参数"));
@@ -115,4 +215,12 @@ void loop() {
   checkConcatTimeout();
   if (Serial.available()) Serial1.write(Serial.read());
   checkSerial1URC();
+  static bool modemInitStarted = false;
+  if (!modemInitStarted && millis() > 8000) {
+    modemInitStarted = true;
+    modemInit();
+  }
+  if (modemInitStarted) modemBackgroundTask();
+  checkScheduledSms();
+  checkScheduledNotify();
 }

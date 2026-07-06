@@ -62,10 +62,98 @@ void logCaptureLn(const char* msg) {
   _logCommit();
 }
 
+static String htmlEscape(const String& input) {
+  String output = input;
+  output.replace("&", "&amp;");
+  output.replace("\"", "&quot;");
+  output.replace("<", "&lt;");
+  output.replace(">", "&gt;");
+  return output;
+}
+
+static void addReason(String& reasons, const char* reason) {
+  if (reasons.indexOf(reason) >= 0) return;
+  if (reasons.length()) reasons += "、";
+  reasons += reason;
+}
+
+static void beginChangeSection(String& details, const String& title) {
+  if (details.length()) details += "\n";
+  details += title;
+  details += "\n";
+}
+
+static void addChangeValue(String& details, const char* label, const String& value) {
+  details += label;
+  details += "\n";
+  details += value.length() ? value : String("-");
+  details += "\n";
+}
+
+static String yesNoText(bool value) {
+  return value ? "启用" : "关闭";
+}
+
+static String pushTypeText(PushType type) {
+  switch (type) {
+    case PUSH_TYPE_POST_JSON: return "POST JSON";
+    case PUSH_TYPE_BARK: return "Bark";
+    case PUSH_TYPE_GET: return "GET";
+    case PUSH_TYPE_DINGTALK: return "钉钉";
+    case PUSH_TYPE_PUSHPLUS: return "PushPlus";
+    case PUSH_TYPE_SERVERCHAN: return "Server酱";
+    case PUSH_TYPE_CUSTOM: return "自定义";
+    case PUSH_TYPE_FEISHU: return "飞书";
+    case PUSH_TYPE_GOTIFY: return "Gotify";
+    case PUSH_TYPE_TELEGRAM: return "Telegram";
+    default: return "未启用";
+  }
+}
+
+static String twoDigits(uint8_t value) {
+  char buf[3];
+  snprintf(buf, sizeof(buf), "%02u", (unsigned int)value);
+  return String(buf);
+}
+
+static String scheduledSmsTypeName(ScheduledSmsType type) {
+  if (type == SCHEDULE_SMS_WEEKLY) return "每周";
+  if (type == SCHEDULE_SMS_MONTHLY) return "每月";
+  return "每天";
+}
+
+static String scheduledSmsWeekdayName(uint8_t weekday) {
+  switch (weekday) {
+    case 1: return "周一";
+    case 2: return "周二";
+    case 3: return "周三";
+    case 4: return "周四";
+    case 5: return "周五";
+    case 6: return "周六";
+    case 7: return "周日";
+    default: return "周一";
+  }
+}
+
+static String scheduledSmsStatusText() {
+  const ScheduledSmsConfig& scheduled = config.scheduledSms;
+  if (!scheduled.enabled) return "未启用";
+  if (scheduled.phone.length() == 0) return "已启用，但号码未填写";
+
+  String text = scheduledSmsTypeName(scheduled.type);
+  if (scheduled.type == SCHEDULE_SMS_WEEKLY) {
+    text += scheduledSmsWeekdayName(scheduled.weekday);
+  } else if (scheduled.type == SCHEDULE_SMS_MONTHLY) {
+    text += String(scheduled.monthDay) + "日";
+  }
+  text += " " + twoDigits(scheduled.hour) + ":" + twoDigits(scheduled.minute) + " 北京时间发送";
+  return text;
+}
+
 // 检查HTTP Basic认证
 bool checkAuth() {
   if (!server.authenticate(config.webUser.c_str(), config.webPass.c_str())) {
-    server.requestAuthentication(BASIC_AUTH, "SMS Forwarding", "请输入管理员账号密码");
+    server.requestAuthentication(BASIC_AUTH, "SMS", "login");
     return false;
   }
   return true;
@@ -73,6 +161,10 @@ bool checkAuth() {
 
 // 处理配置页面请求
 void handleRoot() {
+  if (inApConfigMode) {
+    handleApConfigRoot();
+    return;
+  }
   if (!checkAuth()) return;
   
   String html = String(htmlPage);
@@ -89,20 +181,60 @@ void handleRoot() {
   html.replace("%SMTP_PORT%", String(config.smtpPort));
   html.replace("%SMTP_USER%", config.smtpUser);
   html.replace("%SMTP_PASS%", config.smtpPass);
-  html.replace("%SMTP_SEND_TO%", config.smtpSendTo);
+  html.replace("%SMTP_SEND_TO%", htmlEscape(config.smtpSendTo));
+  html.replace("%SMTP_SERVER2%", config.smtpServer2);
+  html.replace("%SMTP_PORT2%", String(config.smtpPort2));
+  html.replace("%SMTP_USER2%", config.smtpUser2);
+  html.replace("%SMTP_PASS2%", config.smtpPass2);
+  html.replace("%SMTP_SEND_TO2%", htmlEscape(config.smtpSendTo2));
+  html.replace("%SMTP_SERVER3%", config.smtpServer3);
+  html.replace("%SMTP_PORT3%", String(config.smtpPort3));
+  html.replace("%SMTP_USER3%", config.smtpUser3);
+  html.replace("%SMTP_PASS3%", config.smtpPass3);
+  html.replace("%SMTP_SEND_TO3%", htmlEscape(config.smtpSendTo3));
   html.replace("%ADMIN_PHONE%", config.adminPhone);
+  html.replace("%LOCAL_PHONE%", htmlEscape(config.localPhone));
+  html.replace("%ADMIN_SMS_WHITELIST%", htmlEscape(config.adminSmsWhitelist.length() ? config.adminSmsWhitelist : config.adminPhone));
   html.replace("%NUMBER_BLACK_LIST%", config.numberBlackList);
+  html.replace("%WIFI_SSID_VAL%", htmlEscape(config.wifiSsid));
+  html.replace("%WIFI_PASS_VAL%", htmlEscape(config.wifiPass));
+  html.replace("%WIFI_BACKUP_SSID1%", htmlEscape(config.wifiBackupSsid1));
+  html.replace("%WIFI_BACKUP_PASS1%", htmlEscape(config.wifiBackupPass1));
+  html.replace("%WIFI_BACKUP_SSID2%", htmlEscape(config.wifiBackupSsid2));
+  html.replace("%WIFI_BACKUP_PASS2%", htmlEscape(config.wifiBackupPass2));
+  html.replace("%SCHEDULE_SMS_ENABLED_CHECKED%", config.scheduledSms.enabled ? " checked" : "");
+  html.replace("%SCHEDULE_SMS_TYPE%", String((int)config.scheduledSms.type));
+  html.replace("%SCHEDULE_SMS_PHONE%", htmlEscape(config.scheduledSms.phone));
+  html.replace("%SCHEDULE_SMS_CONTENT%", htmlEscape(config.scheduledSms.content));
+  html.replace("%SCHEDULE_SMS_HOUR%", String(config.scheduledSms.hour));
+  html.replace("%SCHEDULE_SMS_MINUTE%", String(config.scheduledSms.minute));
+  html.replace("%SCHEDULE_SMS_WEEKDAY%", String(config.scheduledSms.weekday));
+  html.replace("%SCHEDULE_SMS_MONTHDAY%", String(config.scheduledSms.monthDay));
+  html.replace("%SCHEDULE_SMS_STATUS%", scheduledSmsStatusText());
+  html.replace("%NOTIFY_ENABLED_CHECKED%", config.scheduledNotify.enabled ? " checked" : "");
+  html.replace("%NOTIFY_TYPE%", String((int)config.scheduledNotify.type));
+  html.replace("%NOTIFY_CONTENT%", htmlEscape(config.scheduledNotify.content));
+  html.replace("%NOTIFY_HOUR%", String(config.scheduledNotify.hour));
+  html.replace("%NOTIFY_MINUTE%", String(config.scheduledNotify.minute));
+  html.replace("%NOTIFY_WEEKDAY%", String(config.scheduledNotify.weekday));
+  html.replace("%NOTIFY_MONTHDAY%", String(config.scheduledNotify.monthDay));
 
   // 概览页面的配置状态
   bool emailOk = config.smtpServer.length() > 0 && config.smtpUser.length() > 0 &&
                  config.smtpPass.length() > 0 && config.smtpSendTo.length() > 0;
+  emailOk = emailOk ||
+            (config.smtpServer2.length() > 0 && config.smtpUser2.length() > 0 &&
+             config.smtpPass2.length() > 0 && config.smtpSendTo2.length() > 0) ||
+            (config.smtpServer3.length() > 0 && config.smtpUser3.length() > 0 &&
+             config.smtpPass3.length() > 0 && config.smtpSendTo3.length() > 0);
   html.replace("%SMTP_CHECK%", emailOk ? "已配置" : "未配置");
-  html.replace("%MODEM_CHECK%", modemReady ? "已就绪" : "未就绪");
-  int pushCount = 0;
-  for (int i = 0; i < MAX_PUSH_CHANNELS; i++) {
-    if (config.pushChannels[i].enabled) pushCount++;
-  }
-  html.replace("%PUSH_COUNT%", String(pushCount));
+  html.replace("%MODEM_CHECK%", modemReady ? "已就绪" : "未插SIM卡/未注册");
+  String adminSmsOverview = config.adminSmsWhitelist.length() ? config.adminSmsWhitelist : config.adminPhone;
+  adminSmsOverview.replace("\r", "");
+  adminSmsOverview.replace("\n", ", ");
+  html.replace("%PUSH_NAMES%", getEnabledPushNames());
+  html.replace("%ADMIN_SMS_WHITELIST_OVERVIEW%", adminSmsOverview.length() ? htmlEscape(adminSmsOverview) : "-");
+  html.replace("%LOCAL_PHONE_OVERVIEW%", config.localPhone.length() ? config.localPhone : "-");
   
   // 生成推送通道HTML
   String channelsHtml = "";
@@ -634,6 +766,8 @@ void handleSendSms() {
     
     success = sendSMS(phone.c_str(), content.c_str());
     resultMsg = success ? "短信发送成功！" : "短信发送失败，请检查模组状态";
+    String body = "目标号码：" + phone + "\n短信内容：" + content + "\n结果：" + String(success ? "成功" : "失败");
+    sendNotifyAll(success ? "网页短信发送成功" : "网页短信发送失败", body.c_str());
   }
   
   String html = R"rawliteral(
@@ -847,6 +981,35 @@ void handlePing() {
 // 处理保存配置请求
 void handleSave() {
   if (!checkAuth()) return;
+  String reasons = "";
+  String changeDetails = "";
+  String oldAdminPhone = config.adminPhone;
+  String oldAdminSmsWhitelist = config.adminSmsWhitelist;
+  String oldLocalPhone = config.localPhone;
+  String oldNumberBlackList = config.numberBlackList;
+  String oldWifiSsid = config.wifiSsid;
+  String oldWifiPass = config.wifiPass;
+  String oldWifiBackupSsid1 = config.wifiBackupSsid1;
+  String oldWifiBackupPass1 = config.wifiBackupPass1;
+  String oldWifiBackupSsid2 = config.wifiBackupSsid2;
+  String oldWifiBackupPass2 = config.wifiBackupPass2;
+  String oldWebUser = config.webUser;
+  String oldWebPass = config.webPass;
+  String oldSmtpServer = config.smtpServer;
+  String oldSmtpUser = config.smtpUser;
+  String oldSmtpPass = config.smtpPass;
+  String oldSmtpSendTo = config.smtpSendTo;
+  int oldSmtpPort = config.smtpPort;
+  String oldSmtpServer2 = config.smtpServer2;
+  String oldSmtpUser2 = config.smtpUser2;
+  String oldSmtpPass2 = config.smtpPass2;
+  String oldSmtpSendTo2 = config.smtpSendTo2;
+  int oldSmtpPort2 = config.smtpPort2;
+  String oldSmtpServer3 = config.smtpServer3;
+  String oldSmtpUser3 = config.smtpUser3;
+  String oldSmtpPass3 = config.smtpPass3;
+  String oldSmtpSendTo3 = config.smtpSendTo3;
+  int oldSmtpPort3 = config.smtpPort3;
 
   // 账号管理表单：只在字段存在时更新
   if (server.hasArg("webUser")) {
@@ -858,6 +1021,12 @@ void handleSave() {
     String newWebPass = server.arg("webPass");
     if (newWebPass.length() == 0) newWebPass = DEFAULT_WEB_PASS;
     config.webPass = newWebPass;
+  }
+  if (config.webUser != oldWebUser || config.webPass != oldWebPass) {
+    addReason(reasons, "修改登录账号");
+    beginChangeSection(changeDetails, "登录凭据");
+    addChangeValue(changeDetails, "管理账号", config.webUser);
+    addChangeValue(changeDetails, "管理密码", config.webPass);
   }
 
   // 邮件通知表单：只在字段存在时更新
@@ -877,13 +1046,253 @@ void handleSave() {
   if (server.hasArg("smtpSendTo")) {
     config.smtpSendTo = server.arg("smtpSendTo");
   }
+  if (server.hasArg("smtpServer2")) {
+    config.smtpServer2 = server.arg("smtpServer2");
+  }
+  if (server.hasArg("smtpPort2")) {
+    config.smtpPort2 = server.arg("smtpPort2").toInt();
+    if (config.smtpPort2 == 0) config.smtpPort2 = 465;
+  }
+  if (server.hasArg("smtpUser2")) {
+    config.smtpUser2 = server.arg("smtpUser2");
+  }
+  if (server.hasArg("smtpPass2")) {
+    config.smtpPass2 = server.arg("smtpPass2");
+  }
+  if (server.hasArg("smtpSendTo2")) {
+    config.smtpSendTo2 = server.arg("smtpSendTo2");
+  }
+  if (server.hasArg("smtpServer3")) {
+    config.smtpServer3 = server.arg("smtpServer3");
+  }
+  if (server.hasArg("smtpPort3")) {
+    config.smtpPort3 = server.arg("smtpPort3").toInt();
+    if (config.smtpPort3 == 0) config.smtpPort3 = 465;
+  }
+  if (server.hasArg("smtpUser3")) {
+    config.smtpUser3 = server.arg("smtpUser3");
+  }
+  if (server.hasArg("smtpPass3")) {
+    config.smtpPass3 = server.arg("smtpPass3");
+  }
+  if (server.hasArg("smtpSendTo3")) {
+    config.smtpSendTo3 = server.arg("smtpSendTo3");
+  }
+  if (config.smtpServer != oldSmtpServer || config.smtpPort != oldSmtpPort ||
+      config.smtpUser != oldSmtpUser || config.smtpPass != oldSmtpPass ||
+      config.smtpSendTo != oldSmtpSendTo ||
+      config.smtpServer2 != oldSmtpServer2 || config.smtpPort2 != oldSmtpPort2 ||
+      config.smtpUser2 != oldSmtpUser2 || config.smtpPass2 != oldSmtpPass2 ||
+      config.smtpSendTo2 != oldSmtpSendTo2 ||
+      config.smtpServer3 != oldSmtpServer3 || config.smtpPort3 != oldSmtpPort3 ||
+      config.smtpUser3 != oldSmtpUser3 || config.smtpPass3 != oldSmtpPass3 ||
+      config.smtpSendTo3 != oldSmtpSendTo3) {
+    addReason(reasons, "更新邮件配置");
+    if (config.smtpServer != oldSmtpServer || config.smtpPort != oldSmtpPort ||
+        config.smtpUser != oldSmtpUser || config.smtpPass != oldSmtpPass ||
+        config.smtpSendTo != oldSmtpSendTo) {
+      beginChangeSection(changeDetails, "邮件通道 1");
+      addChangeValue(changeDetails, "SMTP 服务器", config.smtpServer);
+      addChangeValue(changeDetails, "SMTP 端口", String(config.smtpPort));
+      addChangeValue(changeDetails, "发送邮箱账号", config.smtpUser);
+      addChangeValue(changeDetails, "密码 / 授权码", config.smtpPass);
+      addChangeValue(changeDetails, "接收邮件地址", config.smtpSendTo);
+    }
+    if (config.smtpServer2 != oldSmtpServer2 || config.smtpPort2 != oldSmtpPort2 ||
+        config.smtpUser2 != oldSmtpUser2 || config.smtpPass2 != oldSmtpPass2 ||
+        config.smtpSendTo2 != oldSmtpSendTo2) {
+      beginChangeSection(changeDetails, "邮件通道 2");
+      addChangeValue(changeDetails, "SMTP 服务器", config.smtpServer2);
+      addChangeValue(changeDetails, "SMTP 端口", String(config.smtpPort2));
+      addChangeValue(changeDetails, "发送邮箱账号", config.smtpUser2);
+      addChangeValue(changeDetails, "密码 / 授权码", config.smtpPass2);
+      addChangeValue(changeDetails, "接收邮件地址", config.smtpSendTo2);
+    }
+    if (config.smtpServer3 != oldSmtpServer3 || config.smtpPort3 != oldSmtpPort3 ||
+        config.smtpUser3 != oldSmtpUser3 || config.smtpPass3 != oldSmtpPass3 ||
+        config.smtpSendTo3 != oldSmtpSendTo3) {
+      beginChangeSection(changeDetails, "邮件通道 3");
+      addChangeValue(changeDetails, "SMTP 服务器", config.smtpServer3);
+      addChangeValue(changeDetails, "SMTP 端口", String(config.smtpPort3));
+      addChangeValue(changeDetails, "发送邮箱账号", config.smtpUser3);
+      addChangeValue(changeDetails, "密码 / 授权码", config.smtpPass3);
+      addChangeValue(changeDetails, "接收邮件地址", config.smtpSendTo3);
+    }
+  }
 
   // 管理员 & 黑名单表单：只在字段存在时更新
   if (server.hasArg("adminPhone")) {
     config.adminPhone = server.arg("adminPhone");
   }
+  if (server.hasArg("localPhone")) {
+    config.localPhone = server.arg("localPhone");
+    config.localPhone.trim();
+    if (config.localPhone.length() && config.localPhone != oldLocalPhone) {
+      writeSimPhoneNumber(config.localPhone);
+    }
+  }
+  if (server.hasArg("adminSmsWhitelist")) {
+    config.adminSmsWhitelist = server.arg("adminSmsWhitelist");
+  }
   if (server.hasArg("numberBlackList")) {
     config.numberBlackList = server.arg("numberBlackList");
+  }
+  if (config.adminPhone != oldAdminPhone) addReason(reasons, oldAdminPhone.length() ? "修改管理号码" : "增加管理号码");
+  if (config.adminSmsWhitelist != oldAdminSmsWhitelist) addReason(reasons, oldAdminSmsWhitelist.length() ? "修改管理员号码" : "增加管理员号码");
+  if (config.localPhone != oldLocalPhone) addReason(reasons, oldLocalPhone.length() ? "修改本机号码" : "增加本机号码");
+  if (config.numberBlackList != oldNumberBlackList) addReason(reasons, "修改号码黑名单");
+  if (config.adminPhone != oldAdminPhone || config.adminSmsWhitelist != oldAdminSmsWhitelist ||
+      config.localPhone != oldLocalPhone || config.numberBlackList != oldNumberBlackList) {
+    beginChangeSection(changeDetails, "管理员与号码");
+    addChangeValue(changeDetails, "本机号码", config.localPhone);
+    addChangeValue(changeDetails, "管理号码", config.adminPhone);
+    addChangeValue(changeDetails, "管理员号码", config.adminSmsWhitelist);
+    addChangeValue(changeDetails, "号码黑名单", config.numberBlackList);
+  }
+
+  bool wifiUpdated = false;
+  if (server.hasArg("wifiForm")) {
+    config.wifiSsid = server.arg("wifiSsid");
+    config.wifiPass = server.arg("wifiPass");
+    config.wifiBackupSsid1 = server.arg("wifiBackupSsid1");
+    config.wifiBackupPass1 = server.arg("wifiBackupPass1");
+    config.wifiBackupSsid2 = server.arg("wifiBackupSsid2");
+    config.wifiBackupPass2 = server.arg("wifiBackupPass2");
+    config.wifiSsid.trim();
+    config.wifiBackupSsid1.trim();
+    config.wifiBackupSsid2.trim();
+    wifiUpdated = true;
+    addReason(reasons, "更新WiFi配置");
+    if (config.wifiSsid != oldWifiSsid || config.wifiPass != oldWifiPass ||
+        config.wifiBackupSsid1 != oldWifiBackupSsid1 || config.wifiBackupPass1 != oldWifiBackupPass1 ||
+        config.wifiBackupSsid2 != oldWifiBackupSsid2 || config.wifiBackupPass2 != oldWifiBackupPass2) {
+      beginChangeSection(changeDetails, "WiFi 配置");
+      addChangeValue(changeDetails, "WiFi名称1", config.wifiSsid);
+      addChangeValue(changeDetails, "WiFi密码1", config.wifiPass);
+      addChangeValue(changeDetails, "WiFi名称2", config.wifiBackupSsid1);
+      addChangeValue(changeDetails, "WiFi密码2", config.wifiBackupPass1);
+      addChangeValue(changeDetails, "WiFi名称3", config.wifiBackupSsid2);
+      addChangeValue(changeDetails, "WiFi密码3", config.wifiBackupPass2);
+    }
+  }
+
+  // 定时短信表单：只在该表单提交时更新
+  if (server.hasArg("scheduledSmsForm")) {
+    bool oldEnabled = config.scheduledSms.enabled;
+    ScheduledSmsType oldType = config.scheduledSms.type;
+    String oldPhone = config.scheduledSms.phone;
+    String oldContent = config.scheduledSms.content;
+    uint8_t oldHour = config.scheduledSms.hour;
+    uint8_t oldMinute = config.scheduledSms.minute;
+    uint8_t oldWeekday = config.scheduledSms.weekday;
+    uint8_t oldMonthDay = config.scheduledSms.monthDay;
+
+    String phone = server.arg("scheduledSmsPhone");
+    String content = server.arg("scheduledSmsContent");
+    phone.trim();
+    content.trim();
+
+    int scheduleType = server.arg("scheduledSmsType").toInt();
+    if (scheduleType < SCHEDULE_SMS_DAILY || scheduleType > SCHEDULE_SMS_MONTHLY) scheduleType = SCHEDULE_SMS_DAILY;
+
+    int hour = server.arg("scheduledSmsHour").toInt();
+    if (hour < 0) hour = 0;
+    if (hour > 23) hour = 23;
+
+    int minute = server.arg("scheduledSmsMinute").toInt();
+    if (minute < 0) minute = 0;
+    if (minute > 59) minute = 59;
+
+    int weekday = server.arg("scheduledSmsWeekday").toInt();
+    if (weekday < 1) weekday = 1;
+    if (weekday > 7) weekday = 7;
+
+    int monthDay = server.arg("scheduledSmsMonthDay").toInt();
+    if (monthDay < 1) monthDay = 1;
+    if (monthDay > 31) monthDay = 31;
+
+    config.scheduledSms.enabled = server.arg("scheduledSmsEnabled") == "on";
+    config.scheduledSms.type = (ScheduledSmsType)scheduleType;
+    config.scheduledSms.phone = phone;
+    config.scheduledSms.content = content;
+    config.scheduledSms.hour = (uint8_t)hour;
+    config.scheduledSms.minute = (uint8_t)minute;
+    config.scheduledSms.weekday = (uint8_t)weekday;
+    config.scheduledSms.monthDay = (uint8_t)monthDay;
+
+    bool changed = oldEnabled != config.scheduledSms.enabled ||
+                   oldType != config.scheduledSms.type ||
+                   oldPhone != config.scheduledSms.phone ||
+                   oldContent != config.scheduledSms.content ||
+                   oldHour != config.scheduledSms.hour ||
+                   oldMinute != config.scheduledSms.minute ||
+                   oldWeekday != config.scheduledSms.weekday ||
+                   oldMonthDay != config.scheduledSms.monthDay;
+    if (changed) {
+      config.scheduledSms.lastRunDayKey = 0;
+      addReason(reasons, "更新定时短信");
+      beginChangeSection(changeDetails, "定时短信");
+      addChangeValue(changeDetails, "状态", yesNoText(config.scheduledSms.enabled));
+      addChangeValue(changeDetails, "周期", scheduledSmsTypeName(config.scheduledSms.type));
+      addChangeValue(changeDetails, "接收号码", config.scheduledSms.phone);
+      addChangeValue(changeDetails, "短信内容", config.scheduledSms.content.length() ? config.scheduledSms.content : String("留空发送系统概览"));
+      addChangeValue(changeDetails, "发送时间", twoDigits(config.scheduledSms.hour) + ":" + twoDigits(config.scheduledSms.minute));
+      if (config.scheduledSms.type == SCHEDULE_SMS_WEEKLY) addChangeValue(changeDetails, "每周", scheduledSmsWeekdayName(config.scheduledSms.weekday));
+      if (config.scheduledSms.type == SCHEDULE_SMS_MONTHLY) addChangeValue(changeDetails, "每月", String(config.scheduledSms.monthDay) + "日");
+    }
+  }
+
+  if (server.hasArg("notifyForm")) {
+    bool oldEnabled = config.scheduledNotify.enabled;
+    ScheduledSmsType oldType = config.scheduledNotify.type;
+    String oldContent = config.scheduledNotify.content;
+    uint8_t oldHour = config.scheduledNotify.hour;
+    uint8_t oldMinute = config.scheduledNotify.minute;
+    uint8_t oldWeekday = config.scheduledNotify.weekday;
+    uint8_t oldMonthDay = config.scheduledNotify.monthDay;
+
+    int scheduleType = server.arg("notifyType").toInt();
+    if (scheduleType < SCHEDULE_SMS_DAILY || scheduleType > SCHEDULE_SMS_MONTHLY) scheduleType = SCHEDULE_SMS_DAILY;
+    int hour = server.arg("notifyHour").toInt();
+    if (hour < 0) hour = 0;
+    if (hour > 23) hour = 23;
+    int minute = server.arg("notifyMinute").toInt();
+    if (minute < 0) minute = 0;
+    if (minute > 59) minute = 59;
+    int weekday = server.arg("notifyWeekday").toInt();
+    if (weekday < 1) weekday = 1;
+    if (weekday > 7) weekday = 7;
+    int monthDay = server.arg("notifyMonthDay").toInt();
+    if (monthDay < 1) monthDay = 1;
+    if (monthDay > 31) monthDay = 31;
+
+    config.scheduledNotify.enabled = server.arg("notifyEnabled") == "on";
+    config.scheduledNotify.type = (ScheduledSmsType)scheduleType;
+    config.scheduledNotify.content = server.arg("notifyContent");
+    config.scheduledNotify.content.trim();
+    config.scheduledNotify.hour = (uint8_t)hour;
+    config.scheduledNotify.minute = (uint8_t)minute;
+    config.scheduledNotify.weekday = (uint8_t)weekday;
+    config.scheduledNotify.monthDay = (uint8_t)monthDay;
+
+    bool changed = oldEnabled != config.scheduledNotify.enabled ||
+                   oldType != config.scheduledNotify.type ||
+                   oldContent != config.scheduledNotify.content ||
+                   oldHour != config.scheduledNotify.hour ||
+                   oldMinute != config.scheduledNotify.minute ||
+                   oldWeekday != config.scheduledNotify.weekday ||
+                   oldMonthDay != config.scheduledNotify.monthDay;
+    if (changed) {
+      config.scheduledNotify.lastRunDayKey = 0;
+      addReason(reasons, "更新状态快照");
+      beginChangeSection(changeDetails, "状态快照");
+      addChangeValue(changeDetails, "状态", yesNoText(config.scheduledNotify.enabled));
+      addChangeValue(changeDetails, "周期", scheduledSmsTypeName(config.scheduledNotify.type));
+      addChangeValue(changeDetails, "推送内容", config.scheduledNotify.content.length() ? config.scheduledNotify.content : String("留空发送系统概览"));
+      addChangeValue(changeDetails, "推送时间", twoDigits(config.scheduledNotify.hour) + ":" + twoDigits(config.scheduledNotify.minute));
+      if (config.scheduledNotify.type == SCHEDULE_SMS_WEEKLY) addChangeValue(changeDetails, "每周", scheduledSmsWeekdayName(config.scheduledNotify.weekday));
+      if (config.scheduledNotify.type == SCHEDULE_SMS_MONTHLY) addChangeValue(changeDetails, "每月", String(config.scheduledNotify.monthDay) + "日");
+    }
   }
 
   // 推送通道配置：只在对应通道的字段存在时更新
@@ -900,6 +1309,8 @@ void handleSave() {
     if (server.hasArg(enKey) || server.hasArg(typeKey) || server.hasArg(urlKey) ||
         server.hasArg(nameKey) || server.hasArg(k1Key) || server.hasArg(k2Key) ||
         server.hasArg(bodyKey)) {
+      PushChannel oldCh = config.pushChannels[i];
+      bool oldValid = isPushChannelValid(oldCh);
       config.pushChannels[i].enabled = server.arg(enKey) == "on";
       config.pushChannels[i].type = (PushType)server.arg(typeKey).toInt();
       config.pushChannels[i].url = server.arg(urlKey);
@@ -909,6 +1320,29 @@ void handleSave() {
       config.pushChannels[i].customBody = server.arg(bodyKey);
       if (config.pushChannels[i].name.length() == 0) {
         config.pushChannels[i].name = "通道" + String(i + 1);
+      }
+      bool newValid = isPushChannelValid(config.pushChannels[i]);
+      bool changed = oldCh.enabled != config.pushChannels[i].enabled ||
+                     oldCh.type != config.pushChannels[i].type ||
+                     oldCh.url != config.pushChannels[i].url ||
+                     oldCh.name != config.pushChannels[i].name ||
+                     oldCh.key1 != config.pushChannels[i].key1 ||
+                     oldCh.key2 != config.pushChannels[i].key2 ||
+                     oldCh.customBody != config.pushChannels[i].customBody;
+      if (!oldValid && newValid) addReason(reasons, "增加推送通道");
+      else if (oldValid && !newValid) addReason(reasons, "关闭推送通道");
+      else if (changed) {
+        addReason(reasons, "修改推送通道");
+      }
+      if (changed) {
+        beginChangeSection(changeDetails, "推送通道 " + String(i + 1));
+        addChangeValue(changeDetails, "状态", yesNoText(config.pushChannels[i].enabled));
+        addChangeValue(changeDetails, "类型", pushTypeText(config.pushChannels[i].type));
+        addChangeValue(changeDetails, "名称", config.pushChannels[i].name);
+        addChangeValue(changeDetails, "URL", config.pushChannels[i].url);
+        addChangeValue(changeDetails, "参数1", config.pushChannels[i].key1);
+        addChangeValue(changeDetails, "参数2", config.pushChannels[i].key2);
+        addChangeValue(changeDetails, "自定义内容", config.pushChannels[i].customBody);
       }
     }
   }
@@ -939,12 +1373,21 @@ void handleSave() {
 )rawliteral";
   server.send(200, "text/html", html);
   
-  // 如果配置有效，发送启动通知
   if (configValid) {
-    logCaptureLn(String("配置有效，发送启动通知..."));
-    String subject = "短信转发器配置已更新";
-    String body = "设备配置已更新\n设备地址: " + getDeviceUrl();
-    sendEmailNotification(subject.c_str(), body.c_str());
+    if (reasons.length() == 0) reasons = "配置已更新";
+    logCaptureLn(String("配置有效，发送通知: ") + reasons);
+    String body = getSystemOverview();
+    if (changeDetails.length()) {
+      body += "\n\n变更内容：\n";
+      body += changeDetails;
+    }
+    sendNotifyAll(reasons.c_str(), body.c_str());
+  }
+
+  if (wifiUpdated) {
+    logCaptureLn(String("WiFi 配置已更新，设备即将重启并按主/A/B顺序连接..."));
+    delay(1500);
+    ESP.restart();
   }
 }
 
@@ -1073,6 +1516,33 @@ void handleModem() {
   server.send(200, "application/json", json);
 }
 
+void handleApConfigRoot() {
+  String html = String(wifiProvisionPage);
+  html.replace("%WIFI_LIST%", scannedWifiListHtml);
+  server.send(200, "text/html", html);
+}
+
+void handleSaveWifi() {
+  if (!server.hasArg("ssid")) {
+    server.send(400, "text/plain", "缺少WiFi名称");
+    return;
+  }
+
+  String ssid = server.arg("ssid");
+  String pass = server.arg("password");
+  ssid.trim();
+
+  config.wifiSsid = ssid;
+  config.wifiPass = pass;
+  saveConfig();
+
+  String html = F("<!doctype html><meta charset=\"utf-8\"><h3>WiFi已保存</h3><p>正在连接，失败后会重新开启热点。</p>");
+  server.send(200, "text/html", html);
+
+  wifiConfigSubmitted = true;
+  wifiConfigSubmittedTime = millis();
+}
+
 // WiFi 重启
 void handleWifi() {
   if (!checkAuth()) return;
@@ -1093,8 +1563,9 @@ void handleWifi() {
     WiFi.setSleep(false);
     WiFi.setAutoReconnect(true);
     WiFi.setScanMethod(WIFI_FAST_SCAN);
-    WiFi.begin(WIFI_SSID, WIFI_PASS);
-    logCaptureLn(String("正在重新连接WiFi: " + String(WIFI_SSID)));
+    if (config.wifiPass.length()) WiFi.begin(config.wifiSsid.c_str(), config.wifiPass.c_str());
+    else WiFi.begin(config.wifiSsid.c_str());
+    logCaptureLn(String("正在重新连接WiFi: " + config.wifiSsid));
     unsigned long start = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) {
       delay(50);
