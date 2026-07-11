@@ -1543,6 +1543,12 @@ void handleSaveWifi() {
   wifiConfigSubmittedTime = millis();
 }
 
+void handleWifiScan() {
+  if (!inApConfigMode && !checkAuth()) return;
+  refreshWifiScanList();
+  server.send(200, "text/html; charset=utf-8", scannedWifiListHtml);
+}
+
 // WiFi 重启
 void handleWifi() {
   if (!checkAuth()) return;
@@ -1558,23 +1564,13 @@ void handleWifi() {
   if (action == "restart") {
     logCaptureLn(String("网页端请求重启WiFi..."));
     server.send(200, "application/json", "{\"success\":true,\"message\":\"WiFi 正在重启，请等待约 5 秒后刷新页面\"}");
-    WiFi.disconnect(true);
+    WiFi.disconnect(false, false);
     delay(500);
-    WiFi.setSleep(false);
-    WiFi.setAutoReconnect(true);
-    WiFi.setScanMethod(WIFI_FAST_SCAN);
-    if (config.wifiPass.length()) WiFi.begin(config.wifiSsid.c_str(), config.wifiPass.c_str());
-    else WiFi.begin(config.wifiSsid.c_str());
-    logCaptureLn(String("正在重新连接WiFi: " + config.wifiSsid));
-    unsigned long start = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) {
-      delay(50);
-      server.handleClient();
-    }
-    if (WiFi.status() == WL_CONNECTED) {
+    if (connectSavedWifis()) {
       logCaptureLn(String("WiFi 重连成功, IP: " + WiFi.localIP().toString()));
     } else {
-      logCaptureLn(String("WiFi 重连失败，将在后台持续尝试"));
+      logCaptureLn(String("WiFi reconnect failed, entering AP+STA recovery"));
+      enterApConfigMode();
     }
   } else {
     server.send(200, "application/json", "{\"success\":false,\"message\":\"未知操作\"}");

@@ -42,4 +42,8 @@ extern String scannedWifiListHtml;
 extern bool wifiConfigSubmitted;
 extern unsigned long wifiConfigSubmittedTime;
 
+bool refreshWifiScanList();
+bool connectSavedWifis();
+void enterApConfigMode();
+
 #endif
