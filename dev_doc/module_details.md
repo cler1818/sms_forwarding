@@ -39,6 +39,14 @@
    ├── WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN)             // 扫描全部信道
    └── WiFi.begin(SSID, PASS, 0, nullptr, true)              // 支持隐藏SSID
 
+运行期 WiFi 恢复策略：
+
+- 连接失败后进入 `WIFI_AP_STA`，保留 `192.168.4.1` 配网页，同时每 60 秒继续尝试已保存的三组 WiFi。
+- 配网页可调用 `/wifi_scan` 实时重新扫描，也允许手动输入 SSID。
+- 收到断线事件时保存 reason；重新获得 IP 后需连续稳定 60 秒才发送恢复提醒。
+- 恢复提醒包含 SSID、IP、RSSI、BSSID、信道、离线时长和断线 reason code。
+- 恢复提醒设有 10 分钟冷却时间，冷却期内重复波动只记录日志、不重复推送。
+
 7. NTP 时间同步
    ├── configTime(0, 0, "ntp.ntsc.ac.cn", ...)              // UTC时区
    └── 等待 time() > 100000 (最多10秒)

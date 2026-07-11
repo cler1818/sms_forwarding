@@ -15,6 +15,16 @@ volatile bool wifiDisconnectEventPending = false;
 volatile uint8_t wifiDisconnectReason = 0;
 volatile bool wifiGotIpEventPending = false;
 bool networkStartupDone = false;
+unsigned long networkStartupAt = 0;
+bool wifiRecoveryIncident = false;
+bool wifiRecoveryNoticePending = false;
+unsigned long wifiDisconnectedAt = 0;
+unsigned long wifiRecoveredAt = 0;
+unsigned long lastWifiRecoveryNoticeAt = 0;
+uint8_t wifiRecoveryReason = 0;
+
+const unsigned long WIFI_RECOVERY_STABLE_MS = 60000;
+const unsigned long WIFI_RECOVERY_NOTICE_COOLDOWN_MS = 600000;
 
 void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
   if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
@@ -59,7 +69,39 @@ void finishNetworkStartup() {
   }
 
   networkStartupDone = true;
+  networkStartupAt = millis();
+  wifiRecoveryIncident = false;
+  wifiRecoveryNoticePending = false;
 
+}
+
+void checkWifiRecoveryNotice() {
+  if (!wifiRecoveryNoticePending || WiFi.status() != WL_CONNECTED) return;
+  if (millis() - wifiRecoveredAt < WIFI_RECOVERY_STABLE_MS) return;
+
+  wifiRecoveryNoticePending = false;
+  wifiRecoveryIncident = false;
+
+  if (lastWifiRecoveryNoticeAt != 0 &&
+      millis() - lastWifiRecoveryNoticeAt < WIFI_RECOVERY_NOTICE_COOLDOWN_MS) {
+    logCaptureLn(String("WiFi recovery notice suppressed by cooldown"));
+    return;
+  }
+
+  unsigned long offlineSeconds = (wifiRecoveredAt - wifiDisconnectedAt) / 1000;
+  String body = "WiFi连接曾中断，现已恢复并稳定在线。\n";
+  body += "WiFi：" + WiFi.SSID() + "\n";
+  body += "IP：" + WiFi.localIP().toString() + "\n";
+  body += "信号：" + String(WiFi.RSSI()) + " dBm\n";
+  body += "BSSID：" + WiFi.BSSIDstr() + "\n";
+  body += "信道：" + String(WiFi.channel()) + "\n";
+  body += "离线时长：约 " + String(offlineSeconds) + " 秒\n";
+  body += "断线原因代码：" + String(wifiRecoveryReason) + "\n";
+  body += "说明：连接恢复后已连续稳定 60 秒。";
+
+  logCaptureLn(String("WiFi stable, sending recovery notice"));
+  sendNotifyAll("WiFi断线后已重新上线", body.c_str());
+  lastWifiRecoveryNoticeAt = millis();
 }
 
 bool connectWifiCredential(const String& ssid, const String& pass, const String& label) {
@@ -234,10 +276,21 @@ void loop() {
   if (wifiDisconnectEventPending) {
     wifiDisconnectEventPending = false;
     logCaptureLn(String("WiFi disconnected, reason: ") + String(wifiDisconnectReason));
+    if (networkStartupDone && millis() - networkStartupAt > 30000) {
+      if (!wifiRecoveryIncident) wifiDisconnectedAt = millis();
+      wifiRecoveryIncident = true;
+      wifiRecoveryNoticePending = false;
+      wifiRecoveryReason = wifiDisconnectReason;
+    }
   }
   if (wifiGotIpEventPending) {
     wifiGotIpEventPending = false;
     logCaptureLn(String("WiFi got IP: ") + WiFi.localIP().toString());
+    if (networkStartupDone && wifiRecoveryIncident) {
+      wifiRecoveredAt = millis();
+      wifiRecoveryNoticePending = true;
+      logCaptureLn(String("WiFi recovered, waiting 60s stable before notice"));
+    }
   }
   if (wifiConfigSubmitted && millis() - wifiConfigSubmittedTime > 1000) {
     wifiConfigSubmitted = false;
@@ -278,4 +331,5 @@ void loop() {
   if (modemInitStarted) modemBackgroundTask();
   checkScheduledSms();
   checkScheduledNotify();
+  checkWifiRecoveryNotice();
 }
