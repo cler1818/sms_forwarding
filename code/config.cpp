@@ -49,6 +49,14 @@ void saveConfig() {
   preferences.putUChar("notifyWeekday", config.scheduledNotify.weekday);
   preferences.putUChar("notifyMonthDay", config.scheduledNotify.monthDay);
   preferences.putUInt("notifyLastRun", config.scheduledNotify.lastRunDayKey);
+  preferences.putBool("modRstEn", config.scheduledModemRestart.enabled);
+  preferences.putUChar("modRstType", (uint8_t)config.scheduledModemRestart.type);
+  preferences.putUChar("modRstMode", (uint8_t)config.scheduledModemRestart.mode);
+  preferences.putUChar("modRstHour", config.scheduledModemRestart.hour);
+  preferences.putUChar("modRstMin", config.scheduledModemRestart.minute);
+  preferences.putUChar("modRstWeek", config.scheduledModemRestart.weekday);
+  preferences.putUChar("modRstDay", config.scheduledModemRestart.monthDay);
+  preferences.putUInt("modRstLast", config.scheduledModemRestart.lastRunDayKey);
   
   // 保存推送通道配置
   for (int i = 0; i < MAX_PUSH_CHANNELS; i++) {
@@ -113,6 +121,14 @@ void loadConfig() {
   config.scheduledNotify.weekday = preferences.getUChar("notifyWeekday", 1);
   config.scheduledNotify.monthDay = preferences.getUChar("notifyMonthDay", 1);
   config.scheduledNotify.lastRunDayKey = preferences.getUInt("notifyLastRun", 0);
+  config.scheduledModemRestart.enabled = preferences.getBool("modRstEn", false);
+  config.scheduledModemRestart.type = (ScheduledSmsType)preferences.getUChar("modRstType", SCHEDULE_SMS_DAILY);
+  config.scheduledModemRestart.mode = (ScheduledModemRestartMode)preferences.getUChar("modRstMode", MODEM_RESTART_SOFT);
+  config.scheduledModemRestart.hour = preferences.getUChar("modRstHour", 4);
+  config.scheduledModemRestart.minute = preferences.getUChar("modRstMin", 0);
+  config.scheduledModemRestart.weekday = preferences.getUChar("modRstWeek", 1);
+  config.scheduledModemRestart.monthDay = preferences.getUChar("modRstDay", 1);
+  config.scheduledModemRestart.lastRunDayKey = preferences.getUInt("modRstLast", 0);
 
   if (config.scheduledSms.type > SCHEDULE_SMS_MONTHLY) config.scheduledSms.type = SCHEDULE_SMS_DAILY;
   if (config.scheduledSms.hour > 23) config.scheduledSms.hour = 9;
@@ -124,6 +140,12 @@ void loadConfig() {
   if (config.scheduledNotify.minute > 59) config.scheduledNotify.minute = 0;
   if (config.scheduledNotify.weekday < 1 || config.scheduledNotify.weekday > 7) config.scheduledNotify.weekday = 1;
   if (config.scheduledNotify.monthDay < 1 || config.scheduledNotify.monthDay > 31) config.scheduledNotify.monthDay = 1;
+  if (config.scheduledModemRestart.type > SCHEDULE_SMS_MONTHLY) config.scheduledModemRestart.type = SCHEDULE_SMS_DAILY;
+  if (config.scheduledModemRestart.mode > MODEM_RESTART_HARD) config.scheduledModemRestart.mode = MODEM_RESTART_SOFT;
+  if (config.scheduledModemRestart.hour > 23) config.scheduledModemRestart.hour = 4;
+  if (config.scheduledModemRestart.minute > 59) config.scheduledModemRestart.minute = 0;
+  if (config.scheduledModemRestart.weekday < 1 || config.scheduledModemRestart.weekday > 7) config.scheduledModemRestart.weekday = 1;
+  if (config.scheduledModemRestart.monthDay < 1 || config.scheduledModemRestart.monthDay > 31) config.scheduledModemRestart.monthDay = 1;
   
   // 加载推送通道配置
   for (int i = 0; i < MAX_PUSH_CHANNELS; i++) {

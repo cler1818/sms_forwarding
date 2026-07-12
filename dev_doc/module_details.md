@@ -188,6 +188,14 @@ Namespace: "sms_config"
 ### 修改指南
 
 - **添加新配置项**: 在 `Config` 结构体加字段 → `loadConfig()` 加读取（设默认值） → `saveConfig()` 加写入 → `handleSave()` 加表单解析
+
+### 定时模组重启
+
+`ScheduledModemRestartConfig` 保存启用状态、周期、软/硬重启方式、北京时间时分、星期/日期和最后运行日。配置由 `saveConfig()/loadConfig()` 持久化到 NVS。
+
+`checkScheduledModemRestart()` 复用现有每天/每周/每月判断：命中时间后先保存 `lastRunDayKey`，再执行重启，保证当天最多触发一次。软重启发送 `AT+CFUN=1,1` 后重新初始化模组；硬重启调用 `resetModule()`，通过 EN 引脚完成断电、上电和初始化。硬重启更彻底，但耗时更长。
+
+网页入口位于“模组控制 → 定时模组重启”。该功能只控制蜂窝模组，不重启 ESP32-C3。
 - **修改校验逻辑**: 编辑 `isPushChannelValid()` 和 `isConfigValid()`
 
 ---

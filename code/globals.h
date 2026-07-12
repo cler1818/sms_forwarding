@@ -41,6 +41,7 @@ extern bool inApConfigMode;
 extern String scannedWifiListHtml;
 extern bool wifiConfigSubmitted;
 extern unsigned long wifiConfigSubmittedTime;
+extern bool modemOperationBusy;
 
 bool refreshWifiScanList();
 bool connectSavedWifis();

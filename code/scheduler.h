@@ -3,5 +3,6 @@
 
 void checkScheduledSms();
 void checkScheduledNotify();
+void checkScheduledModemRestart();
 
 #endif

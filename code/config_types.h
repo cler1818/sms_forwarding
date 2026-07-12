@@ -52,6 +52,22 @@ struct ScheduledNotifyConfig {
   uint32_t lastRunDayKey;
 };
 
+enum ScheduledModemRestartMode {
+  MODEM_RESTART_SOFT = 0,
+  MODEM_RESTART_HARD = 1
+};
+
+struct ScheduledModemRestartConfig {
+  bool enabled;
+  ScheduledSmsType type;
+  ScheduledModemRestartMode mode;
+  uint8_t hour;
+  uint8_t minute;
+  uint8_t weekday;
+  uint8_t monthDay;
+  uint32_t lastRunDayKey;
+};
+
 // 推送通道配置（通用设计，支持多种推送方式）
 struct PushChannel {
   bool enabled;           // 是否启用
@@ -95,6 +111,7 @@ struct Config {
   String wifiBackupPass2; // 备用 WiFi B 密码
   ScheduledSmsConfig scheduledSms;  // 定时短信
   ScheduledNotifyConfig scheduledNotify;
+  ScheduledModemRestartConfig scheduledModemRestart;
 };
 
 // 默认Web管理账号密码

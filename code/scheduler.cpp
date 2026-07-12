@@ -86,6 +86,51 @@ void checkScheduledSms() {
   sendNotifyAll(success ? "定时短信发送成功" : "定时短信发送失败", result.c_str());
 }
 
+void checkScheduledModemRestart() {
+  ScheduledModemRestartConfig& scheduled = config.scheduledModemRestart;
+  if (!scheduled.enabled || modemOperationBusy) return;
+
+  time_t now = time(nullptr);
+  if (now < 100000) return;
+
+  time_t localNow = now + SCHEDULE_TIMEZONE_OFFSET_SEC;
+  tm localTime;
+  gmtime_r(&localNow, &localTime);
+
+  if (localTime.tm_hour != scheduled.hour || localTime.tm_min != scheduled.minute) return;
+  if (!shouldRunToday(localTime, scheduled.type, scheduled.weekday, scheduled.monthDay)) return;
+
+  uint32_t dayKey = makeDayKey(localTime);
+  if (scheduled.lastRunDayKey == dayKey) return;
+
+  scheduled.lastRunDayKey = dayKey;
+  saveConfig();
+  modemOperationBusy = true;
+
+  bool success = false;
+  String modeName = scheduled.mode == MODEM_RESTART_HARD ? "硬重启" : "软重启";
+  logCaptureLn(String("Scheduled modem restart: ") + modeName);
+
+  if (scheduled.mode == MODEM_RESTART_HARD) {
+    resetModule();
+    success = modemReady;
+  } else {
+    String resp = sendATCommand("AT+CFUN=1,1", 15000);
+    success = resp.indexOf("OK") >= 0;
+    logCaptureLn(String("Scheduled modem soft restart response: ") + resp);
+    if (success) modemInit();
+  }
+
+  modemOperationBusy = false;
+
+  String body = "定时模组" + modeName + (success ? "已完成。\n" : "执行失败。\n");
+  body += "方式：" + modeName + "\n";
+  body += scheduled.mode == MODEM_RESTART_HARD
+            ? "说明：EN 引脚断电再上电，重启更彻底。"
+            : "说明：通过 AT+CFUN=1,1 重启，耗时和供电冲击较小。";
+  sendNotifyAll(success ? "定时模组重启完成" : "定时模组重启失败", body.c_str());
+}
+
 void checkScheduledNotify() {
   ScheduledNotifyConfig& scheduled = config.scheduledNotify;
   if (!scheduled.enabled) return;

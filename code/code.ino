@@ -331,5 +331,6 @@ void loop() {
   if (modemInitStarted) modemBackgroundTask();
   checkScheduledSms();
   checkScheduledNotify();
+  checkScheduledModemRestart();
   checkWifiRecoveryNotice();
 }

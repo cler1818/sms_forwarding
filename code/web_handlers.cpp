@@ -150,6 +150,24 @@ static String scheduledSmsStatusText() {
   return text;
 }
 
+static String modemRestartModeName(ScheduledModemRestartMode mode) {
+  return mode == MODEM_RESTART_HARD ? "硬重启（EN断电，较彻底）" : "软重启（AT+CFUN）";
+}
+
+static String scheduledModemRestartStatusText() {
+  const ScheduledModemRestartConfig& scheduled = config.scheduledModemRestart;
+  if (!scheduled.enabled) return "未启用";
+  String text = scheduledSmsTypeName(scheduled.type);
+  if (scheduled.type == SCHEDULE_SMS_WEEKLY) {
+    text += scheduledSmsWeekdayName(scheduled.weekday);
+  } else if (scheduled.type == SCHEDULE_SMS_MONTHLY) {
+    text += String(scheduled.monthDay) + "日";
+  }
+  text += " " + twoDigits(scheduled.hour) + ":" + twoDigits(scheduled.minute);
+  text += "，" + modemRestartModeName(scheduled.mode);
+  return text;
+}
+
 // 检查HTTP Basic认证
 bool checkAuth() {
   if (!server.authenticate(config.webUser.c_str(), config.webPass.c_str())) {
@@ -168,6 +186,10 @@ void handleRoot() {
   if (!checkAuth()) return;
   
   String html = String(htmlPage);
+  const char* modemRestartScheduleCard = R"rawliteral(<div class="card"><div class="card-header"> 定时模组重启</div><div class="card-body"><form action="/save" method="POST"><input type="hidden" name="modemRestartForm" value="1"><div class="form-group"><label class="label-inline"><input type="checkbox" name="modemRestartEnabled"%MODEM_RESTART_ENABLED_CHECKED%> 启用定时模组重启</label><p class="form-hint">当前状态：%MODEM_RESTART_STATUS%</p></div><div class="form-row"><div class="form-group"><label class="form-label">重启方式</label><select class="form-select" name="modemRestartMode" data-value="%MODEM_RESTART_MODE%"><option value="0">软重启（AT+CFUN）</option><option value="1">硬重启（EN断电，较彻底）</option></select></div><div class="form-group"><label class="form-label">周期</label><select class="form-select" name="modemRestartType" id="modemRestartType" data-value="%MODEM_RESTART_TYPE%" onchange="updateModemRestartFields()"><option value="0">每天</option><option value="1">每周</option><option value="2">每月</option></select></div></div><div class="form-row"><div class="form-group"><label class="form-label">小时</label><input class="form-input" type="number" name="modemRestartHour" value="%MODEM_RESTART_HOUR%" min="0" max="23"></div><div class="form-group"><label class="form-label">分钟</label><input class="form-input" type="number" name="modemRestartMinute" value="%MODEM_RESTART_MINUTE%" min="0" max="59"></div></div><div class="form-row"><div class="form-group" id="modemRestartWeekdayGroup"><label class="form-label">星期</label><select class="form-select" name="modemRestartWeekday" data-value="%MODEM_RESTART_WEEKDAY%"><option value="1">周一</option><option value="2">周二</option><option value="3">周三</option><option value="4">周四</option><option value="5">周五</option><option value="6">周六</option><option value="7">周日</option></select></div><div class="form-group" id="modemRestartMonthDayGroup"><label class="form-label">日期</label><input class="form-input" type="number" name="modemRestartMonthDay" value="%MODEM_RESTART_MONTHDAY%" min="1" max="31"></div></div><button type="submit" class="btn btn-primary btn-block">保存定时重启设置</button></form></div></div><script>function updateModemRestartFields(){var t=document.getElementById('modemRestartType');if(!t)return;document.getElementById('modemRestartWeekdayGroup').style.display=t.value==='1'?'':'none';document.getElementById('modemRestartMonthDayGroup').style.display=t.value==='2'?'':'none';}setTimeout(updateModemRestartFields,0);</script>)rawliteral";
+  html.replace("<div class=\"card\"><div class=\"card-header\"> 信号查询</div>", String(modemRestartScheduleCard) + "<div class=\"card\"><div class=\"card-header\"> 信号查询</div>");
+  html.replace("setTimeout(updateModemRestartFields,0);", "document.addEventListener('DOMContentLoaded',function(){setTimeout(updateModemRestartFields,0);});");
+  html.replace("软重启发送 AT+CFUN=1,1 指令（15s 超时）；硬重启通过 EN 引脚断电后重新上电", "软重启通过 AT+CFUN=1,1 执行，耗时和供电冲击较小；硬重启通过 EN 引脚断电再上电，重启更彻底。");
   html.replace("%IP%", WiFi.localIP().toString());
   html.replace("%WIFI_SSID%", String(WiFi.SSID()));
   html.replace("%FREE_HEAP%", String(ESP.getFreeHeap() / 1024) + " KB");
@@ -218,6 +240,14 @@ void handleRoot() {
   html.replace("%NOTIFY_MINUTE%", String(config.scheduledNotify.minute));
   html.replace("%NOTIFY_WEEKDAY%", String(config.scheduledNotify.weekday));
   html.replace("%NOTIFY_MONTHDAY%", String(config.scheduledNotify.monthDay));
+  html.replace("%MODEM_RESTART_ENABLED_CHECKED%", config.scheduledModemRestart.enabled ? " checked" : "");
+  html.replace("%MODEM_RESTART_TYPE%", String((int)config.scheduledModemRestart.type));
+  html.replace("%MODEM_RESTART_MODE%", String((int)config.scheduledModemRestart.mode));
+  html.replace("%MODEM_RESTART_HOUR%", String(config.scheduledModemRestart.hour));
+  html.replace("%MODEM_RESTART_MINUTE%", String(config.scheduledModemRestart.minute));
+  html.replace("%MODEM_RESTART_WEEKDAY%", String(config.scheduledModemRestart.weekday));
+  html.replace("%MODEM_RESTART_MONTHDAY%", String(config.scheduledModemRestart.monthDay));
+  html.replace("%MODEM_RESTART_STATUS%", scheduledModemRestartStatusText());
 
   // 概览页面的配置状态
   bool emailOk = config.smtpServer.length() > 0 && config.smtpUser.length() > 0 &&
@@ -1242,6 +1272,50 @@ void handleSave() {
     }
   }
 
+  if (server.hasArg("modemRestartForm")) {
+    bool oldEnabled = config.scheduledModemRestart.enabled;
+    ScheduledSmsType oldType = config.scheduledModemRestart.type;
+    ScheduledModemRestartMode oldMode = config.scheduledModemRestart.mode;
+    uint8_t oldHour = config.scheduledModemRestart.hour;
+    uint8_t oldMinute = config.scheduledModemRestart.minute;
+    uint8_t oldWeekday = config.scheduledModemRestart.weekday;
+    uint8_t oldMonthDay = config.scheduledModemRestart.monthDay;
+
+    int scheduleType = server.arg("modemRestartType").toInt();
+    if (scheduleType < SCHEDULE_SMS_DAILY || scheduleType > SCHEDULE_SMS_MONTHLY) scheduleType = SCHEDULE_SMS_DAILY;
+    int restartMode = server.arg("modemRestartMode").toInt();
+    if (restartMode < MODEM_RESTART_SOFT || restartMode > MODEM_RESTART_HARD) restartMode = MODEM_RESTART_SOFT;
+    int hour = constrain(server.arg("modemRestartHour").toInt(), 0, 23);
+    int minute = constrain(server.arg("modemRestartMinute").toInt(), 0, 59);
+    int weekday = constrain(server.arg("modemRestartWeekday").toInt(), 1, 7);
+    int monthDay = constrain(server.arg("modemRestartMonthDay").toInt(), 1, 31);
+
+    config.scheduledModemRestart.enabled = server.arg("modemRestartEnabled") == "on";
+    config.scheduledModemRestart.type = (ScheduledSmsType)scheduleType;
+    config.scheduledModemRestart.mode = (ScheduledModemRestartMode)restartMode;
+    config.scheduledModemRestart.hour = (uint8_t)hour;
+    config.scheduledModemRestart.minute = (uint8_t)minute;
+    config.scheduledModemRestart.weekday = (uint8_t)weekday;
+    config.scheduledModemRestart.monthDay = (uint8_t)monthDay;
+
+    bool changed = oldEnabled != config.scheduledModemRestart.enabled ||
+                   oldType != config.scheduledModemRestart.type ||
+                   oldMode != config.scheduledModemRestart.mode ||
+                   oldHour != config.scheduledModemRestart.hour ||
+                   oldMinute != config.scheduledModemRestart.minute ||
+                   oldWeekday != config.scheduledModemRestart.weekday ||
+                   oldMonthDay != config.scheduledModemRestart.monthDay;
+    if (changed) {
+      config.scheduledModemRestart.lastRunDayKey = 0;
+      addReason(reasons, "更新定时模组重启");
+      beginChangeSection(changeDetails, "定时模组重启");
+      addChangeValue(changeDetails, "状态", yesNoText(config.scheduledModemRestart.enabled));
+      addChangeValue(changeDetails, "周期", scheduledSmsTypeName(config.scheduledModemRestart.type));
+      addChangeValue(changeDetails, "方式", modemRestartModeName(config.scheduledModemRestart.mode));
+      addChangeValue(changeDetails, "时间", twoDigits(config.scheduledModemRestart.hour) + ":" + twoDigits(config.scheduledModemRestart.minute));
+    }
+  }
+
   if (server.hasArg("notifyForm")) {
     bool oldEnabled = config.scheduledNotify.enabled;
     ScheduledSmsType oldType = config.scheduledNotify.type;
@@ -1413,12 +1487,11 @@ void handleModem() {
 
   // 防止重入：modemInit() 内部会调 server.handleClient()，
   // 若浏览器超时重试会导致嵌套调用，最终拖垮 WiFi
-  static bool busy = false;
-  if (busy) {
+  if (modemOperationBusy) {
     server.send(429, "application/json", "{\"success\":false,\"message\":\"模组正忙，请稍后重试\"}");
     return;
   }
-  busy = true;
+  modemOperationBusy = true;
 
   String action = server.arg("action");
   String json = "{";
@@ -1434,7 +1507,7 @@ void handleModem() {
     message = success ? "模组软重启成功" : "软重启失败";
     logCaptureLn(String(message + ": " + resp));
     if (success) modemInit();
-    busy = false;
+    modemOperationBusy = false;
     return;
   }
   else if (action == "hardreset") {
@@ -1442,6 +1515,7 @@ void handleModem() {
     logCaptureLn(String("网页端请求硬重启模组..."));
     server.send(200, "application/json", "{\"success\":true,\"message\":\"正在硬重启模组，请等待约 15 秒后刷新页面\"}");
     resetModule();
+    modemOperationBusy = false;
     return;
   }
   else if (action == "signal") {
@@ -1512,7 +1586,7 @@ void handleModem() {
   json += "\"success\":" + String(success ? "true" : "false") + ",";
   json += "\"message\":\"" + jsonEscape(message) + "\"";
   json += "}";
-  busy = false;
+  modemOperationBusy = false;
   server.send(200, "application/json", json);
 }
 
