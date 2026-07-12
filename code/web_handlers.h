@@ -30,5 +30,7 @@ void handleWifi();
 void handleWifiScan();
 void handleApConfigRoot();
 void handleSaveWifi();
+void handleNotificationRulesPage();
+void handleSaveNotificationRules();
 
 #endif

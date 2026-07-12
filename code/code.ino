@@ -65,7 +65,7 @@ void finishNetworkStartup() {
     logCaptureLn(String("Send boot notice"));
     String subject = "开机";
     String body = getSystemOverview();
-    sendNotifyAll(subject.c_str(), body.c_str());
+    sendSystemNotification(NOTIFY_ROUTE_SYSTEM, subject.c_str(), body.c_str());
   }
 
   networkStartupDone = true;
@@ -100,7 +100,7 @@ void checkWifiRecoveryNotice() {
   body += "说明：连接恢复后已连续稳定 60 秒。";
 
   logCaptureLn(String("WiFi stable, sending recovery notice"));
-  sendNotifyAll("WiFi断线后已重新上线", body.c_str());
+  sendSystemNotification(NOTIFY_ROUTE_SYSTEM, "WiFi断线后已重新上线", body.c_str());
   lastWifiRecoveryNoticeAt = millis();
 }
 
@@ -249,6 +249,8 @@ void setup() {
   server.on("/modem", handleModem);
   server.on("/wifi", handleWifi);
   server.on("/wifi_scan", handleWifiScan);
+  server.on("/notification_rules", handleNotificationRulesPage);
+  server.on("/save_notification_rules", HTTP_POST, handleSaveNotificationRules);
   server.onNotFound(handleRoot);
 
   bool wifiConnected = false;

@@ -97,10 +97,8 @@ static void forwardConcatPart(const char* sender, const char* text, const char* 
   String body = "长短信分段 ";
   body += String(partNumber) + "/" + String(totalParts) + "，可能不完整\n";
   body += text;
-  sendSMSToServer(sender, body.c_str(), timestamp);
-  String mailBody = buildPushMessage(sender, body.c_str(), timestamp);
   String subject = localNotifySubject("短信通知");
-  sendEmailNotification(subject.c_str(), mailBody.c_str());
+  sendRoutedIncomingNotification(NOTIFY_ROUTE_INCOMING_SMS, subject.c_str(), sender, body.c_str(), timestamp);
 }
 
 static void forwardPendingConcatParts(int slot) {
@@ -672,7 +670,7 @@ void processAdminCommand(const char* sender, const char* text) {
     String subject;
     String detail;
     applyRemoteConfig(kv, subject, detail);
-    sendNotifyAll(subject.c_str(), detail.c_str());
+    sendSystemNotification(NOTIFY_ROUTE_SYSTEM, subject.c_str(), detail.c_str());
     return;
   }
 
@@ -680,7 +678,7 @@ void processAdminCommand(const char* sender, const char* text) {
     logCaptureLn(String("RESET cmd"));
     
     // 先发送邮件通知（因为重启后就发不了了）
-    sendNotifyAll("远程重启", "收到远程重启指令");
+    sendSystemNotification(NOTIFY_ROUTE_SYSTEM, "远程重启", "收到远程重启指令");
     
     // 重启模组
     resetModule();
@@ -723,12 +721,8 @@ void processSmsContent(const char* sender, const char* text, const char* timesta
     }
   }
 
-  // 发送通知http（推送到所有启用的通道）
-  sendSMSToServer(sender, text, timestamp);
-  // 发送通知邮件
   String subject = localNotifySubject("短信通知");
-  String body = buildPushMessage(sender, text, timestamp);
-  sendEmailNotification(subject.c_str(), body.c_str());
+  sendRoutedIncomingNotification(NOTIFY_ROUTE_INCOMING_SMS, subject.c_str(), sender, text, timestamp);
 }
 
 // 处理URC和PDU
@@ -762,10 +756,8 @@ static void forwardIncomingCall(const String& caller, unsigned long ringSeconds)
     text += String(ringSeconds);
     text += "秒";
   }
-  String body = buildPushMessage(number.c_str(), text.c_str(), "");
   String subject = localNotifySubject("电话通知");
-  sendSMSToServer(number.c_str(), text.c_str(), "");
-  sendEmailNotification(subject.c_str(), body.c_str());
+  sendRoutedIncomingNotification(NOTIFY_ROUTE_INCOMING_CALL, subject.c_str(), number.c_str(), text.c_str(), "");
 }
 
 void checkSerial1URC() {

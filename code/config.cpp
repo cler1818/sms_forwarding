@@ -1,6 +1,7 @@
 #include "config.h"
 #include "web_handlers.h"
 #include "wifi_config.h"
+#include "notification_rules.h"
 
 // 保存配置到NVS
 void saveConfig() {
@@ -57,6 +58,12 @@ void saveConfig() {
   preferences.putUChar("modRstWeek", config.scheduledModemRestart.weekday);
   preferences.putUChar("modRstDay", config.scheduledModemRestart.monthDay);
   preferences.putUInt("modRstLast", config.scheduledModemRestart.lastRunDayKey);
+  for (int i = 0; i < NOTIFY_ROUTE_COUNT; i++) {
+    String key = "rule2_" + String(i);
+    String routeData = serializeNotificationRoute(config.notificationRoutes[i]);
+    size_t written = preferences.putString(key.c_str(), routeData);
+    if (written != routeData.length()) logCaptureLn(String("Notification route save failed: ") + String(i));
+  }
   
   // 保存推送通道配置
   for (int i = 0; i < MAX_PUSH_CHANNELS; i++) {
@@ -76,6 +83,7 @@ void saveConfig() {
 
 // 从NVS加载配置
 void loadConfig() {
+  initNotificationRouteDefaults();
   preferences.begin("sms_config", true);
   config.wifiSsid = preferences.getString("wifiSsid", WIFI_SSID);
   config.wifiPass = preferences.getString("wifiPass", WIFI_PASS);
@@ -129,6 +137,11 @@ void loadConfig() {
   config.scheduledModemRestart.weekday = preferences.getUChar("modRstWeek", 1);
   config.scheduledModemRestart.monthDay = preferences.getUChar("modRstDay", 1);
   config.scheduledModemRestart.lastRunDayKey = preferences.getUInt("modRstLast", 0);
+  for (int i = 0; i < NOTIFY_ROUTE_COUNT; i++) {
+    String key = "rule2_" + String(i);
+    String savedRoute = preferences.getString(key.c_str(), "");
+    if (savedRoute.length()) deserializeNotificationRoute(savedRoute, config.notificationRoutes[i]);
+  }
 
   if (config.scheduledSms.type > SCHEDULE_SMS_MONTHLY) config.scheduledSms.type = SCHEDULE_SMS_DAILY;
   if (config.scheduledSms.hour > 23) config.scheduledSms.hour = 9;
@@ -141,7 +154,7 @@ void loadConfig() {
   if (config.scheduledNotify.weekday < 1 || config.scheduledNotify.weekday > 7) config.scheduledNotify.weekday = 1;
   if (config.scheduledNotify.monthDay < 1 || config.scheduledNotify.monthDay > 31) config.scheduledNotify.monthDay = 1;
   if (config.scheduledModemRestart.type > SCHEDULE_SMS_MONTHLY) config.scheduledModemRestart.type = SCHEDULE_SMS_DAILY;
-  if (config.scheduledModemRestart.mode > MODEM_RESTART_HARD) config.scheduledModemRestart.mode = MODEM_RESTART_SOFT;
+  if (config.scheduledModemRestart.mode > MODEM_RESTART_WHOLE_DEVICE) config.scheduledModemRestart.mode = MODEM_RESTART_SOFT;
   if (config.scheduledModemRestart.hour > 23) config.scheduledModemRestart.hour = 4;
   if (config.scheduledModemRestart.minute > 59) config.scheduledModemRestart.minute = 0;
   if (config.scheduledModemRestart.weekday < 1 || config.scheduledModemRestart.weekday > 7) config.scheduledModemRestart.weekday = 1;

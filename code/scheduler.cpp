@@ -83,7 +83,7 @@ void checkScheduledSms() {
   result += success ? "发送成功\n" : "发送失败\n";
   result += "目标号码：" + scheduled.phone + "\n";
   result += "短信内容：" + smsText;
-  sendNotifyAll(success ? "定时短信发送成功" : "定时短信发送失败", result.c_str());
+  sendSystemNotification(NOTIFY_ROUTE_SYSTEM, success ? "定时短信发送成功" : "定时短信发送失败", result.c_str());
 }
 
 void checkScheduledModemRestart() {
@@ -108,10 +108,18 @@ void checkScheduledModemRestart() {
   modemOperationBusy = true;
 
   bool success = false;
-  String modeName = scheduled.mode == MODEM_RESTART_HARD ? "硬重启" : "软重启";
+  String modeName = scheduled.mode == MODEM_RESTART_WHOLE_DEVICE ? "整机重启" :
+                    (scheduled.mode == MODEM_RESTART_HARD ? "硬重启" : "软重启");
   logCaptureLn(String("Scheduled modem restart: ") + modeName);
 
-  if (scheduled.mode == MODEM_RESTART_HARD) {
+  if (scheduled.mode == MODEM_RESTART_WHOLE_DEVICE) {
+    sendSystemNotification(NOTIFY_ROUTE_SYSTEM, "即将执行定时整机重启", "将先硬重启4G模组，再重启ESP32-C3主控。重启后会重新发送开机上线通知。");
+    resetModule();
+    modemOperationBusy = false;
+    delay(1000);
+    ESP.restart();
+    return;
+  } else if (scheduled.mode == MODEM_RESTART_HARD) {
     resetModule();
     success = modemReady;
   } else {
@@ -128,7 +136,7 @@ void checkScheduledModemRestart() {
   body += scheduled.mode == MODEM_RESTART_HARD
             ? "说明：EN 引脚断电再上电，重启更彻底。"
             : "说明：通过 AT+CFUN=1,1 重启，耗时和供电冲击较小。";
-  sendNotifyAll(success ? "定时模组重启完成" : "定时模组重启失败", body.c_str());
+  sendSystemNotification(NOTIFY_ROUTE_SYSTEM, success ? "定时模组重启完成" : "定时模组重启失败", body.c_str());
 }
 
 void checkScheduledNotify() {
@@ -155,5 +163,5 @@ void checkScheduledNotify() {
   if (body.length() == 0) {
     body = getSystemOverview();
   }
-  sendNotifyAll("状态快照", body.c_str());
+  sendSystemNotification(NOTIFY_ROUTE_SYSTEM, "状态快照", body.c_str());
 }

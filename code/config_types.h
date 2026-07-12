@@ -20,6 +20,30 @@ enum PushType {
 
 // 最大推送通道数
 #define MAX_PUSH_CHANNELS 5
+#define MAX_NOTIFICATION_RULES 5
+
+enum NotificationRouteType {
+  NOTIFY_ROUTE_SYSTEM = 0,
+  NOTIFY_ROUTE_INCOMING_SMS = 1,
+  NOTIFY_ROUTE_INCOMING_CALL = 2,
+  NOTIFY_ROUTE_OTHER = 3,
+  NOTIFY_ROUTE_COUNT = 4
+};
+
+struct NotificationMatchRule {
+  bool enabled;
+  String name;
+  String pattern;
+  uint8_t emailMask;
+  uint8_t pushMask;
+};
+
+struct NotificationRouteConfig {
+  bool filterEnabled;
+  uint8_t defaultEmailMask;
+  uint8_t defaultPushMask;
+  NotificationMatchRule rules[MAX_NOTIFICATION_RULES];
+};
 
 // 定时短信周期
 enum ScheduledSmsType {
@@ -54,7 +78,8 @@ struct ScheduledNotifyConfig {
 
 enum ScheduledModemRestartMode {
   MODEM_RESTART_SOFT = 0,
-  MODEM_RESTART_HARD = 1
+  MODEM_RESTART_HARD = 1,
+  MODEM_RESTART_WHOLE_DEVICE = 2
 };
 
 struct ScheduledModemRestartConfig {
@@ -112,6 +137,7 @@ struct Config {
   ScheduledSmsConfig scheduledSms;  // 定时短信
   ScheduledNotifyConfig scheduledNotify;
   ScheduledModemRestartConfig scheduledModemRestart;
+  NotificationRouteConfig notificationRoutes[NOTIFY_ROUTE_COUNT];
 };
 
 // 默认Web管理账号密码

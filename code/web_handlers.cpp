@@ -4,6 +4,7 @@
 #include "modem.h"
 #include "push.h"
 #include "wifi_config.h"
+#include "notification_rules.h"
 
 // ---- 日志环形缓冲区 ----
 String logBuffer[LOG_BUF_SIZE];
@@ -151,6 +152,7 @@ static String scheduledSmsStatusText() {
 }
 
 static String modemRestartModeName(ScheduledModemRestartMode mode) {
+  if (mode == MODEM_RESTART_WHOLE_DEVICE) return "整机重启（4G硬重启 + ESP32-C3）";
   return mode == MODEM_RESTART_HARD ? "硬重启（EN断电，较彻底）" : "软重启（AT+CFUN）";
 }
 
@@ -178,18 +180,185 @@ bool checkAuth() {
 }
 
 // 处理配置页面请求
+static void sendRawChunks(const char* data, size_t length) {
+  const size_t CHUNK_SIZE = 1024;
+  while (length > 0) {
+    size_t part = length > CHUNK_SIZE ? CHUNK_SIZE : length;
+    server.sendContent(data, part);
+    data += part;
+    length -= part;
+  }
+}
+
+static void sendPushChannelCardsStreamed() {
+  for (int i = 0; i < MAX_PUSH_CHANNELS; i++) {
+    String idx = String(i);
+    String card;
+    card.reserve(1900);
+    String enabledClass = config.pushChannels[i].enabled ? " enabled" : "";
+    String checked = config.pushChannels[i].enabled ? " checked" : "";
+    card += "<div class=\"push-channel" + enabledClass + "\" id=\"channel" + idx + "\"><div class=\"push-channel-header\">";
+    card += "<input type=\"checkbox\" name=\"push" + idx + "en\" id=\"push" + idx + "en\" onchange=\"toggleChannel(" + idx + ")\"" + checked + ">";
+    card += "<label for=\"push" + idx + "en\" class=\"label-inline\">启用推送通道 " + String(i + 1) + "</label></div><div class=\"push-channel-body\">";
+    card += "<div class=\"form-group\"><label>通道名称</label><input type=\"text\" name=\"push" + idx + "name\" value=\"" + htmlEscape(config.pushChannels[i].name) + "\" placeholder=\"自定义名称\"></div>";
+    card += "<div class=\"form-group\"><label>推送方式</label><select name=\"push" + idx + "type\" id=\"push" + idx + "type\" onchange=\"updateTypeHint(" + idx + ")\">";
+    const char* labels[] = {"POST JSON（通用格式）", "Bark（iOS推送）", "GET请求（参数在URL中）", "钉钉机器人", "PushPlus", "Server酱", "自定义模板", "飞书机器人", "Gotify", "Telegram Bot"};
+    for (int type = 1; type <= 10; type++) {
+      card += "<option value=\"" + String(type) + "\"" + String((int)config.pushChannels[i].type == type ? " selected" : "") + ">" + labels[type - 1] + "</option>";
+    }
+    card += "</select><div class=\"push-type-hint\" id=\"hint" + idx + "\"></div></div>";
+    card += "<div class=\"form-group\"><label>推送URL/Webhook</label><input type=\"text\" name=\"push" + idx + "url\" value=\"" + htmlEscape(config.pushChannels[i].url) + "\" placeholder=\"http://your-server.com/api 或 webhook地址\"></div>";
+    card += "<div id=\"extra" + idx + "\" style=\"display:none;\"><div class=\"form-group\"><label id=\"key1label" + idx + "\">参数1</label><input type=\"text\" name=\"push" + idx + "key1\" id=\"key1" + idx + "\" value=\"" + htmlEscape(config.pushChannels[i].key1) + "\"></div>";
+    card += "<div class=\"form-group\" id=\"key2group" + idx + "\"><label id=\"key2label" + idx + "\">参数2</label><input type=\"text\" name=\"push" + idx + "key2\" id=\"key2" + idx + "\" value=\"" + htmlEscape(config.pushChannels[i].key2) + "\"></div></div>";
+    card += "<div id=\"custom" + idx + "\" style=\"display:none;\"><div class=\"form-group\"><label>请求体模板（使用 {sender} {message} {timestamp} 占位符）</label><textarea name=\"push" + idx + "body\" rows=\"4\" style=\"width:100%;font-family:monospace;\">" + htmlEscape(config.pushChannels[i].customBody) + "</textarea></div></div>";
+    card += "</div></div>";
+    server.sendContent(card);
+  }
+}
+
+static String rootTemplateValue(const String& token) {
+  if (token == "IP") return WiFi.localIP().toString();
+  if (token == "WIFI_SSID") return WiFi.SSID();
+  if (token == "FREE_HEAP") return String(ESP.getFreeHeap() / 1024) + " KB";
+  if (token == "UPTIME") { unsigned long s = millis() / 1000; char b[16]; snprintf(b, sizeof(b), "%lu:%02lu:%02lu", s / 3600, (s % 3600) / 60, s % 60); return String(b); }
+  if (token == "WEB_USER") return htmlEscape(config.webUser);
+  if (token == "WEB_PASS") return htmlEscape(config.webPass);
+  if (token == "SMTP_SERVER") return htmlEscape(config.smtpServer);
+  if (token == "SMTP_PORT") return String(config.smtpPort);
+  if (token == "SMTP_USER") return htmlEscape(config.smtpUser);
+  if (token == "SMTP_PASS") return htmlEscape(config.smtpPass);
+  if (token == "SMTP_SEND_TO") return htmlEscape(config.smtpSendTo);
+  if (token == "SMTP_SERVER2") return htmlEscape(config.smtpServer2);
+  if (token == "SMTP_PORT2") return String(config.smtpPort2);
+  if (token == "SMTP_USER2") return htmlEscape(config.smtpUser2);
+  if (token == "SMTP_PASS2") return htmlEscape(config.smtpPass2);
+  if (token == "SMTP_SEND_TO2") return htmlEscape(config.smtpSendTo2);
+  if (token == "SMTP_SERVER3") return htmlEscape(config.smtpServer3);
+  if (token == "SMTP_PORT3") return String(config.smtpPort3);
+  if (token == "SMTP_USER3") return htmlEscape(config.smtpUser3);
+  if (token == "SMTP_PASS3") return htmlEscape(config.smtpPass3);
+  if (token == "SMTP_SEND_TO3") return htmlEscape(config.smtpSendTo3);
+  if (token == "LOCAL_PHONE") return htmlEscape(config.localPhone);
+  if (token == "ADMIN_SMS_WHITELIST") return htmlEscape(config.adminSmsWhitelist.length() ? config.adminSmsWhitelist : config.adminPhone);
+  if (token == "NUMBER_BLACK_LIST") return htmlEscape(config.numberBlackList);
+  if (token == "WIFI_SSID_VAL") return htmlEscape(config.wifiSsid);
+  if (token == "WIFI_PASS_VAL") return htmlEscape(config.wifiPass);
+  if (token == "WIFI_BACKUP_SSID1") return htmlEscape(config.wifiBackupSsid1);
+  if (token == "WIFI_BACKUP_PASS1") return htmlEscape(config.wifiBackupPass1);
+  if (token == "WIFI_BACKUP_SSID2") return htmlEscape(config.wifiBackupSsid2);
+  if (token == "WIFI_BACKUP_PASS2") return htmlEscape(config.wifiBackupPass2);
+  if (token == "SCHEDULE_SMS_ENABLED_CHECKED") return config.scheduledSms.enabled ? " checked" : "";
+  if (token == "SCHEDULE_SMS_TYPE") return String((int)config.scheduledSms.type);
+  if (token == "SCHEDULE_SMS_PHONE") return htmlEscape(config.scheduledSms.phone);
+  if (token == "SCHEDULE_SMS_CONTENT") return htmlEscape(config.scheduledSms.content);
+  if (token == "SCHEDULE_SMS_HOUR") return String(config.scheduledSms.hour);
+  if (token == "SCHEDULE_SMS_MINUTE") return String(config.scheduledSms.minute);
+  if (token == "SCHEDULE_SMS_WEEKDAY") return String(config.scheduledSms.weekday);
+  if (token == "SCHEDULE_SMS_MONTHDAY") return String(config.scheduledSms.monthDay);
+  if (token == "SCHEDULE_SMS_STATUS") return scheduledSmsStatusText();
+  if (token == "NOTIFY_ENABLED_CHECKED") return config.scheduledNotify.enabled ? " checked" : "";
+  if (token == "NOTIFY_TYPE") return String((int)config.scheduledNotify.type);
+  if (token == "NOTIFY_CONTENT") return htmlEscape(config.scheduledNotify.content);
+  if (token == "NOTIFY_HOUR") return String(config.scheduledNotify.hour);
+  if (token == "NOTIFY_MINUTE") return String(config.scheduledNotify.minute);
+  if (token == "NOTIFY_WEEKDAY") return String(config.scheduledNotify.weekday);
+  if (token == "NOTIFY_MONTHDAY") return String(config.scheduledNotify.monthDay);
+  if (token == "SMTP_CHECK") { bool ok = (config.smtpServer.length() && config.smtpUser.length() && config.smtpPass.length() && config.smtpSendTo.length()) || (config.smtpServer2.length() && config.smtpUser2.length() && config.smtpPass2.length() && config.smtpSendTo2.length()) || (config.smtpServer3.length() && config.smtpUser3.length() && config.smtpPass3.length() && config.smtpSendTo3.length()); return ok ? "已配置" : "未配置"; }
+  if (token == "MODEM_CHECK") return modemReady ? "已就绪" : "未插SIM卡/未注册";
+  if (token == "PUSH_NAMES") return htmlEscape(getEnabledPushNames());
+  if (token == "ADMIN_SMS_WHITELIST_OVERVIEW") { String s = config.adminSmsWhitelist.length() ? config.adminSmsWhitelist : config.adminPhone; s.replace("\r", ""); s.replace("\n", ", "); return s.length() ? htmlEscape(s) : "-"; }
+  if (token == "LOCAL_PHONE_OVERVIEW") return config.localPhone.length() ? htmlEscape(config.localPhone) : "-";
+  return String();
+}
+
+static String buildRootLayoutInjection() {
+  String card = R"rawliteral(<template id="modemRestartTpl"><div class="card"><div class="card-header">定时模组重启</div><div class="card-body"><form action="/save" method="POST"><input type="hidden" name="modemRestartForm" value="1"><label><input type="checkbox" name="modemRestartEnabled"%MODEM_RESTART_ENABLED_CHECKED%> 启用定时重启</label><p class="form-hint">当前状态：%MODEM_RESTART_STATUS%</p><div class="form-row"><div class="form-group"><label class="form-label">重启方式</label><select class="form-select" name="modemRestartMode" data-value="%MODEM_RESTART_MODE%"><option value="0">4G软重启（AT+CFUN）</option><option value="1">4G硬重启（EN断电）</option><option value="2">整机重启（4G + ESP32-C3）</option></select></div><div class="form-group"><label class="form-label">周期</label><select class="form-select" name="modemRestartType" id="modemRestartType" data-value="%MODEM_RESTART_TYPE%"><option value="0">每天</option><option value="1">每周</option><option value="2">每月</option></select></div></div><div class="form-row"><div class="form-group"><label class="form-label">小时</label><input class="form-input" type="number" name="modemRestartHour" value="%MODEM_RESTART_HOUR%" min="0" max="23"></div><div class="form-group"><label class="form-label">分钟</label><input class="form-input" type="number" name="modemRestartMinute" value="%MODEM_RESTART_MINUTE%" min="0" max="59"></div></div><div class="form-row"><div class="form-group"><label class="form-label">星期</label><select class="form-select" name="modemRestartWeekday" data-value="%MODEM_RESTART_WEEKDAY%"><option value="1">周一</option><option value="2">周二</option><option value="3">周三</option><option value="4">周四</option><option value="5">周五</option><option value="6">周六</option><option value="7">周日</option></select></div><div class="form-group"><label class="form-label">日期</label><input class="form-input" type="number" name="modemRestartMonthDay" value="%MODEM_RESTART_MONTHDAY%" min="1" max="31"></div></div><button class="btn btn-primary btn-block">保存定时重启设置</button></form></div></div></template><script>document.addEventListener('DOMContentLoaded',function(){var nav=document.querySelector('.sidebar-nav'),sendLink=document.querySelector('a[data-panel="sendsms"]'),adminLink=document.querySelector('a[data-panel="admin"]');if(adminLink)adminLink.remove();function addLink(name,text,before){var a=document.createElement('a');a.dataset.panel=name;a.innerHTML='<span>'+text+'</span>';a.addEventListener('click',function(){switchPanel(name);});before.parentNode.insertBefore(a,before);}addLink('rules','推送规则',sendLink);addLink('tasks','定时任务',sendLink);var main=document.querySelector('main'),smsPanel=document.getElementById('panel-sendsms');function addPanel(id,title,sub,body){var p=document.createElement('div');p.className='panel';p.id='panel-'+id;p.innerHTML='<h1 class="page-title">'+title+'</h1><p class="page-subtitle">'+sub+'</p>'+body;main.insertBefore(p,smsPanel);return p;}addPanel('rules','推送规则','系统消息、短信、电话和其他消息分别选择通道。','<iframe src="/notification_rules" style="width:100%;height:78vh;border:0;background:#fff;border-radius:8px;"></iframe>');var tasks=addPanel('tasks','定时任务','集中管理定时短信、状态快照和定时重启。','<div id="scheduledTasksContainer"></div>').querySelector('#scheduledTasksContainer');var account=document.getElementById('mainForm'),admin=document.getElementById('mainForm4');if(account&&admin){var save=account.querySelector('.btn-save');Array.from(admin.querySelectorAll('.card')).forEach(function(c){account.insertBefore(c,save);});admin.remove();}['scheduledSmsForm','notifyForm'].forEach(function(n){var i=document.querySelector('input[name="'+n+'"]');if(i){var c=i.closest('.card');if(c)tasks.appendChild(c);}});var tpl=document.getElementById('modemRestartTpl');if(tpl){tasks.appendChild(tpl.content.cloneNode(true));tpl.remove();}var sms=document.querySelector('input[name="scheduledSmsForm"]');if(sms){var h=sms.closest('.card').querySelector('.card-header');if(h)h.textContent='定时短信';}document.querySelectorAll('select[data-value]').forEach(function(s){s.value=s.dataset.value||'0';});});</script>)rawliteral";
+  card.replace("%MODEM_RESTART_ENABLED_CHECKED%", config.scheduledModemRestart.enabled ? " checked" : "");
+  card.replace("%MODEM_RESTART_STATUS%", scheduledModemRestartStatusText());
+  card.replace("%MODEM_RESTART_MODE%", String((int)config.scheduledModemRestart.mode));
+  card.replace("%MODEM_RESTART_TYPE%", String((int)config.scheduledModemRestart.type));
+  card.replace("%MODEM_RESTART_HOUR%", String(config.scheduledModemRestart.hour));
+  card.replace("%MODEM_RESTART_MINUTE%", String(config.scheduledModemRestart.minute));
+  card.replace("%MODEM_RESTART_WEEKDAY%", String(config.scheduledModemRestart.weekday));
+  card.replace("%MODEM_RESTART_MONTHDAY%", String(config.scheduledModemRestart.monthDay));
+  card += R"rawliteral(<script>document.addEventListener('DOMContentLoaded',function(){var accountLink=document.querySelector('a[data-panel="account"]'),wifiLink=document.querySelector('a[data-panel="wifi"]'),emailLink=document.querySelector('a[data-panel="email"]'),pushLink=document.querySelector('a[data-panel="push"]'),rulesLink=document.querySelector('a[data-panel="rules"]'),tasksLink=document.querySelector('a[data-panel="tasks"]');if(emailLink){var emailText=emailLink.querySelector('span');if(emailText)emailText.textContent='邮件通道';}var emailTitle=document.querySelector('#panel-email .page-title');if(emailTitle)emailTitle.textContent='邮件通道';if(accountLink){var cursor=accountLink;[wifiLink,emailLink,pushLink,rulesLink,tasksLink].forEach(function(item){if(item){cursor.parentNode.insertBefore(item,cursor.nextSibling);cursor=item;}});}});</script>)rawliteral";
+  card += R"rawliteral(<script>document.addEventListener('DOMContentLoaded',function(){document.querySelectorAll('.sidebar-nav a[data-panel]').forEach(function(a){a.onclick=function(e){if(e)e.preventDefault();var name=a.getAttribute('data-panel');var panel=document.getElementById('panel-'+name);if(!panel)return false;document.querySelectorAll('.panel').forEach(function(p){p.classList.remove('active');});panel.classList.add('active');document.querySelectorAll('.sidebar-nav a').forEach(function(n){n.classList.remove('active');});a.classList.add('active');return false;};});});</script>)rawliteral";
+  return card;
+}
+
+static void renderRootStreamed() {
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, "text/html; charset=utf-8", "");
+  const char* cursor = htmlPage;
+  bool layoutSent = false;
+  while (*cursor) {
+    const char* percent = strchr(cursor, '%');
+    const char* bodyEnd = strstr(cursor, "</body>");
+    const char* next = nullptr;
+    bool isBodyEnd = false;
+    if (bodyEnd && (!percent || bodyEnd < percent)) { next = bodyEnd; isBodyEnd = true; }
+    else if (percent) next = percent;
+    else next = cursor + strlen(cursor);
+    sendRawChunks(cursor, (size_t)(next - cursor));
+    if (isBodyEnd) {
+      String layout = buildRootLayoutInjection();
+      server.sendContent(layout);
+      sendRawChunks("</body>", 7);
+      cursor = bodyEnd + 7;
+      layoutSent = true;
+      continue;
+    }
+    if (!percent) break;
+    const char* close = strchr(percent + 1, '%');
+    if (!close || close - percent > 64) {
+      sendRawChunks(percent, 1);
+      cursor = percent + 1;
+      continue;
+    }
+    bool valid = true;
+    for (const char* p = percent + 1; p < close; p++) if (!( (*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') || *p == '_' )) { valid = false; break; }
+    if (!valid) {
+      sendRawChunks(percent, 1);
+      cursor = percent + 1;
+      continue;
+    }
+    String token(percent + 1, (unsigned int)(close - percent - 1));
+    if (token == "PUSH_CHANNELS") {
+      sendPushChannelCardsStreamed();
+    } else {
+      // In chunked HTTP, an empty chunk marks the end of the response. Many
+      // optional settings legitimately render as an empty string, so never
+      // pass those values to sendContent() before the page is complete.
+      String value = rootTemplateValue(token);
+      if (value.length() > 0) server.sendContent(value);
+    }
+    cursor = close + 1;
+  }
+  if (!layoutSent) server.sendContent(buildRootLayoutInjection());
+  server.sendContent("");
+}
+
 void handleRoot() {
   if (inApConfigMode) {
     handleApConfigRoot();
     return;
   }
   if (!checkAuth()) return;
+  renderRootStreamed();
+  return;
   
   String html = String(htmlPage);
+  html.replace("<div class=\"sidebar-divider\"></div><div class=\"sidebar-section-label\">工具</div>", "<a data-panel=\"rules\"><span>推送规则</span></a><div class=\"sidebar-divider\"></div><div class=\"sidebar-section-label\">工具</div>");
+  html.replace("<div class=\"panel\" id=\"panel-sendsms\">", "<div class=\"panel\" id=\"panel-rules\"><h1 class=\"page-title\">推送规则</h1><p class=\"page-subtitle\">系统消息、短信和电话可分别选择邮箱及推送通道，并支持多条正则匹配规则。</p><iframe src=\"/notification_rules\" style=\"width:100%;height:78vh;border:0;background:#fff;border-radius:8px;\"></iframe></div><div class=\"panel\" id=\"panel-sendsms\">");
   const char* modemRestartScheduleCard = R"rawliteral(<div class="card"><div class="card-header"> 定时模组重启</div><div class="card-body"><form action="/save" method="POST"><input type="hidden" name="modemRestartForm" value="1"><div class="form-group"><label class="label-inline"><input type="checkbox" name="modemRestartEnabled"%MODEM_RESTART_ENABLED_CHECKED%> 启用定时模组重启</label><p class="form-hint">当前状态：%MODEM_RESTART_STATUS%</p></div><div class="form-row"><div class="form-group"><label class="form-label">重启方式</label><select class="form-select" name="modemRestartMode" data-value="%MODEM_RESTART_MODE%"><option value="0">软重启（AT+CFUN）</option><option value="1">硬重启（EN断电，较彻底）</option></select></div><div class="form-group"><label class="form-label">周期</label><select class="form-select" name="modemRestartType" id="modemRestartType" data-value="%MODEM_RESTART_TYPE%" onchange="updateModemRestartFields()"><option value="0">每天</option><option value="1">每周</option><option value="2">每月</option></select></div></div><div class="form-row"><div class="form-group"><label class="form-label">小时</label><input class="form-input" type="number" name="modemRestartHour" value="%MODEM_RESTART_HOUR%" min="0" max="23"></div><div class="form-group"><label class="form-label">分钟</label><input class="form-input" type="number" name="modemRestartMinute" value="%MODEM_RESTART_MINUTE%" min="0" max="59"></div></div><div class="form-row"><div class="form-group" id="modemRestartWeekdayGroup"><label class="form-label">星期</label><select class="form-select" name="modemRestartWeekday" data-value="%MODEM_RESTART_WEEKDAY%"><option value="1">周一</option><option value="2">周二</option><option value="3">周三</option><option value="4">周四</option><option value="5">周五</option><option value="6">周六</option><option value="7">周日</option></select></div><div class="form-group" id="modemRestartMonthDayGroup"><label class="form-label">日期</label><input class="form-input" type="number" name="modemRestartMonthDay" value="%MODEM_RESTART_MONTHDAY%" min="1" max="31"></div></div><button type="submit" class="btn btn-primary btn-block">保存定时重启设置</button></form></div></div><script>function updateModemRestartFields(){var t=document.getElementById('modemRestartType');if(!t)return;document.getElementById('modemRestartWeekdayGroup').style.display=t.value==='1'?'':'none';document.getElementById('modemRestartMonthDayGroup').style.display=t.value==='2'?'':'none';}setTimeout(updateModemRestartFields,0);</script>)rawliteral";
   html.replace("<div class=\"card\"><div class=\"card-header\"> 信号查询</div>", String(modemRestartScheduleCard) + "<div class=\"card\"><div class=\"card-header\"> 信号查询</div>");
   html.replace("setTimeout(updateModemRestartFields,0);", "document.addEventListener('DOMContentLoaded',function(){setTimeout(updateModemRestartFields,0);});");
+  html.replace("<option value=\"1\">硬重启（EN断电，较彻底）</option></select>", "<option value=\"1\">4G硬重启（EN断电，较彻底）</option><option value=\"2\">整机重启（4G硬重启 + ESP32-C3）</option></select>");
   html.replace("软重启发送 AT+CFUN=1,1 指令（15s 超时）；硬重启通过 EN 引脚断电后重新上电", "软重启通过 AT+CFUN=1,1 执行，耗时和供电冲击较小；硬重启通过 EN 引脚断电再上电，重启更彻底。");
+  html.replace("<div class=\"panel\" id=\"panel-sendsms\">", "<div class=\"panel\" id=\"panel-tasks\"><h1 class=\"page-title\">定时任务</h1><p class=\"page-subtitle\">集中管理定时短信、状态快照和定时重启。</p><div id=\"scheduledTasksContainer\"></div></div><div class=\"panel\" id=\"panel-sendsms\">");
+  const char* layoutScript = R"rawliteral(<script>document.addEventListener('DOMContentLoaded',function(){var adminLink=document.querySelector('a[data-panel="admin"]');if(adminLink)adminLink.remove();var sendsmsLink=document.querySelector('a[data-panel="sendsms"]');if(sendsmsLink&&!document.querySelector('a[data-panel="tasks"]')){var taskLink=document.createElement('a');taskLink.dataset.panel='tasks';taskLink.innerHTML='<span>定时任务</span>';sendsmsLink.parentNode.insertBefore(taskLink,sendsmsLink);taskLink.addEventListener('click',function(){switchPanel('tasks');});}var account=document.getElementById('mainForm'),admin=document.getElementById('mainForm4');if(account&&admin){var save=account.querySelector('.btn-save');Array.from(admin.querySelectorAll('.card')).forEach(function(card){account.insertBefore(card,save);});admin.remove();}var tasks=document.getElementById('scheduledTasksContainer');if(tasks){['scheduledSmsForm','notifyForm','modemRestartForm'].forEach(function(name){var input=document.querySelector('input[name="'+name+'"]');if(!input)return;var card=input.closest('.card');if(card)tasks.appendChild(card);});var sms=document.querySelector('input[name="scheduledSmsForm"]');if(sms){var h=sms.closest('.card').querySelector('.card-header');if(h)h.textContent='定时短信';}}});</script>)rawliteral";
+  html.replace("</body>", String(layoutScript) + "</body>");
+  html.replace("系统消息、短信和电话可分别选择邮箱及推送通道，并支持多条正则匹配规则。", "系统消息、短信、电话和其他消息可分别选择邮箱及推送通道，并支持多条正则匹配规则。");
   html.replace("%IP%", WiFi.localIP().toString());
   html.replace("%WIFI_SSID%", String(WiFi.SSID()));
   html.replace("%FREE_HEAP%", String(ESP.getFreeHeap() / 1024) + " KB");
@@ -265,10 +434,23 @@ void handleRoot() {
   html.replace("%PUSH_NAMES%", getEnabledPushNames());
   html.replace("%ADMIN_SMS_WHITELIST_OVERVIEW%", adminSmsOverview.length() ? htmlEscape(adminSmsOverview) : "-");
   html.replace("%LOCAL_PHONE_OVERVIEW%", config.localPhone.length() ? config.localPhone : "-");
-  
-  // 生成推送通道HTML
-  String channelsHtml = "";
+
+  const char* pushMarker = "%PUSH_CHANNELS%";
+  int pushMarkerPos = html.indexOf(pushMarker);
+  if (pushMarkerPos < 0) {
+    logCaptureLn(String("PUSH_CHANNELS marker missing"));
+    server.send(200, "text/html", html);
+    return;
+  }
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, "text/html", "");
+  server.sendContent(html.c_str(), (size_t)pushMarkerPos);
+
+  // Generate and release one channel card at a time so a fragmented heap
+  // never needs one aggregate String containing all five channel forms.
   for (int i = 0; i < MAX_PUSH_CHANNELS; i++) {
+    String channelsHtml = "";
+    channelsHtml.reserve(1800);
     String idx = String(i);
     String enabledClass = config.pushChannels[i].enabled ? " enabled" : "";
     String checked = config.pushChannels[i].enabled ? " checked" : "";
@@ -283,7 +465,7 @@ void handleRoot() {
     // 通道名称
     channelsHtml += "<div class=\"form-group\">";
     channelsHtml += "<label>通道名称</label>";
-    channelsHtml += "<input type=\"text\" name=\"push" + idx + "name\" value=\"" + config.pushChannels[i].name + "\" placeholder=\"自定义名称\">";
+    channelsHtml += "<input type=\"text\" name=\"push" + idx + "name\" value=\"" + htmlEscape(config.pushChannels[i].name) + "\" placeholder=\"自定义名称\">";
     channelsHtml += "</div>";
     
     // 推送类型
@@ -307,18 +489,18 @@ void handleRoot() {
     // URL
     channelsHtml += "<div class=\"form-group\">";
     channelsHtml += "<label>推送URL/Webhook</label>";
-    channelsHtml += "<input type=\"text\" name=\"push" + idx + "url\" value=\"" + config.pushChannels[i].url + "\" placeholder=\"http://your-server.com/api 或 webhook地址\">";
+    channelsHtml += "<input type=\"text\" name=\"push" + idx + "url\" value=\"" + htmlEscape(config.pushChannels[i].url) + "\" placeholder=\"http://your-server.com/api 或 webhook地址\">";
     channelsHtml += "</div>";
     
     // 额外参数区域（钉钉/PushPlus/Server酱等需要）
     channelsHtml += "<div id=\"extra" + idx + "\" style=\"display:none;\">";
     channelsHtml += "<div class=\"form-group\">";
     channelsHtml += "<label id=\"key1label" + idx + "\">参数1</label>";
-    channelsHtml += "<input type=\"text\" name=\"push" + idx + "key1\" id=\"key1" + idx + "\" value=\"" + config.pushChannels[i].key1 + "\">";
+    channelsHtml += "<input type=\"text\" name=\"push" + idx + "key1\" id=\"key1" + idx + "\" value=\"" + htmlEscape(config.pushChannels[i].key1) + "\">";
     channelsHtml += "</div>";
     channelsHtml += "<div class=\"form-group\" id=\"key2group" + idx + "\">";
     channelsHtml += "<label id=\"key2label" + idx + "\">参数2</label>";
-    channelsHtml += "<input type=\"text\" name=\"push" + idx + "key2\" id=\"key2" + idx + "\" value=\"" + config.pushChannels[i].key2 + "\">";
+    channelsHtml += "<input type=\"text\" name=\"push" + idx + "key2\" id=\"key2" + idx + "\" value=\"" + htmlEscape(config.pushChannels[i].key2) + "\">";
     channelsHtml += "</div>";
     channelsHtml += "</div>";
     
@@ -326,15 +508,16 @@ void handleRoot() {
     channelsHtml += "<div id=\"custom" + idx + "\" style=\"display:none;\">";
     channelsHtml += "<div class=\"form-group\">";
     channelsHtml += "<label>请求体模板（使用 {sender} {message} {timestamp} 占位符）</label>";
-    channelsHtml += "<textarea name=\"push" + idx + "body\" rows=\"4\" style=\"width:100%;font-family:monospace;\">" + config.pushChannels[i].customBody + "</textarea>";
+    channelsHtml += "<textarea name=\"push" + idx + "body\" rows=\"4\" style=\"width:100%;font-family:monospace;\">" + htmlEscape(config.pushChannels[i].customBody) + "</textarea>";
     channelsHtml += "</div>";
     channelsHtml += "</div>";
     
     channelsHtml += "</div></div>";
+    server.sendContent(channelsHtml);
   }
-  html.replace("%PUSH_CHANNELS%", channelsHtml);
-  
-  server.send(200, "text/html", html);
+  const char* suffix = html.c_str() + pushMarkerPos + strlen(pushMarker);
+  server.sendContent(suffix);
+  server.sendContent("");
 }
 
 // 处理工具箱页面请求 — 已整合到主页，直接返回主页
@@ -797,7 +980,7 @@ void handleSendSms() {
     success = sendSMS(phone.c_str(), content.c_str());
     resultMsg = success ? "短信发送成功！" : "短信发送失败，请检查模组状态";
     String body = "目标号码：" + phone + "\n短信内容：" + content + "\n结果：" + String(success ? "成功" : "失败");
-    sendNotifyAll(success ? "网页短信发送成功" : "网页短信发送失败", body.c_str());
+    sendSystemNotification(NOTIFY_ROUTE_SYSTEM, success ? "网页短信发送成功" : "网页短信发送失败", body.c_str());
   }
   
   String html = R"rawliteral(
@@ -1284,7 +1467,7 @@ void handleSave() {
     int scheduleType = server.arg("modemRestartType").toInt();
     if (scheduleType < SCHEDULE_SMS_DAILY || scheduleType > SCHEDULE_SMS_MONTHLY) scheduleType = SCHEDULE_SMS_DAILY;
     int restartMode = server.arg("modemRestartMode").toInt();
-    if (restartMode < MODEM_RESTART_SOFT || restartMode > MODEM_RESTART_HARD) restartMode = MODEM_RESTART_SOFT;
+    if (restartMode < MODEM_RESTART_SOFT || restartMode > MODEM_RESTART_WHOLE_DEVICE) restartMode = MODEM_RESTART_SOFT;
     int hour = constrain(server.arg("modemRestartHour").toInt(), 0, 23);
     int minute = constrain(server.arg("modemRestartMinute").toInt(), 0, 59);
     int weekday = constrain(server.arg("modemRestartWeekday").toInt(), 1, 7);
@@ -1455,7 +1638,7 @@ void handleSave() {
       body += "\n\n变更内容：\n";
       body += changeDetails;
     }
-    sendNotifyAll(reasons.c_str(), body.c_str());
+    sendSystemNotification(NOTIFY_ROUTE_SYSTEM, reasons.c_str(), body.c_str());
   }
 
   if (wifiUpdated) {
@@ -1588,6 +1771,119 @@ void handleModem() {
   json += "}";
   modemOperationBusy = false;
   server.send(200, "application/json", json);
+}
+
+static String routeChecked(bool checked) {
+  return checked ? " checked" : "";
+}
+
+static String routeDestinationInputs(const String& prefix, uint8_t emailMask, uint8_t pushMask) {
+  String html = "<div class=\"dest\"><span>邮箱：</span>";
+  for (int i = 0; i < 3; i++) {
+    html += "<label><input type=\"checkbox\" name=\"" + prefix + "e" + String(i) + "\"" + routeChecked(emailMask & (1U << i)) + "> 邮箱" + String(i + 1) + "</label>";
+  }
+  html += "</div><div class=\"dest\"><span>推送通道：</span>";
+  for (int i = 0; i < MAX_PUSH_CHANNELS; i++) {
+    String channelName = config.pushChannels[i].name.length() ? htmlEscape(config.pushChannels[i].name) : String("通道") + String(i + 1);
+    html += "<label><input type=\"checkbox\" name=\"" + prefix + "p" + String(i) + "\"" + routeChecked(pushMask & (1U << i)) + "> " + channelName + "</label>";
+  }
+  html += "</div>";
+  return html;
+}
+
+static const char* routeDescription(NotificationRouteType route) {
+  switch (route) {
+    case NOTIFY_ROUTE_SYSTEM: return "开机、WiFi恢复、配置变化、重启、状态快照及短信发送结果等全部系统通知。";
+    case NOTIFY_ROUTE_INCOMING_SMS: return "收到的普通短信及长短信分段；管理员命令和黑名单短信除外。";
+    case NOTIFY_ROUTE_INCOMING_CALL: return "来电号码、归属地及响铃时长提醒。";
+    case NOTIFY_ROUTE_OTHER: return "未来新增但没有明确归入前三类的消息，作为防漏兜底。";
+    default: return "";
+  }
+}
+
+void handleNotificationRulesPage() {
+  if (!checkAuth()) return;
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, "text/html; charset=utf-8", "");
+  server.sendContent(R"rawliteral(<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{font-family:Arial,sans-serif;margin:0;padding:14px;background:#fafafa;color:#171717}.route{background:#fff;border:1px solid #e5e5e5;border-radius:8px;padding:14px;margin-bottom:14px}.route h2{font-size:17px;margin:0 0 4px}.hint{font-size:12px;color:#666;margin:4px 0 12px}.block{background:#f7f7f7;border-radius:6px;padding:10px;margin:9px 0}.rule{border-top:1px solid #ddd;padding-top:10px;margin-top:10px}.dest{display:flex;gap:9px;flex-wrap:wrap;margin:6px 0;font-size:12px}.dest span{font-weight:bold}.row{display:flex;gap:8px}.row>*{flex:1}input[type=text]{width:100%;box-sizing:border-box;padding:7px;border:1px solid #ccc;border-radius:5px}button{width:100%;padding:9px;border:0;border-radius:20px;background:#171717;color:#fff;margin-top:8px}.syntax{font-size:11px;color:#777}label{font-size:12px}</style></head><body><p class="hint">规则默认已经预填，但“正则过滤”和各规则均默认关闭。关闭过滤时走默认通道；开启过滤后，只有匹配到启用规则的消息才发送。多条规则同时命中时会合并通道并自动去重。</p>)rawliteral");
+
+  for (int routeIndex = 0; routeIndex < NOTIFY_ROUTE_COUNT; routeIndex++) {
+    NotificationRouteType routeType = (NotificationRouteType)routeIndex;
+    const NotificationRouteConfig& route = config.notificationRoutes[routeIndex];
+    String card = "<form class=\"route\" action=\"/save_notification_rules\" method=\"POST\"><input type=\"hidden\" name=\"route\" value=\"" + String(routeIndex) + "\">";
+    card += "<h2>" + String(notificationRouteName(routeType)) + "</h2><p class=\"hint\">" + routeDescription(routeType) + "</p>";
+    card += "<div class=\"block\"><b>默认通道</b><p class=\"hint\">正则过滤关闭时使用。</p>";
+    card += routeDestinationInputs("d", route.defaultEmailMask, route.defaultPushMask);
+    card += "</div><label><input type=\"checkbox\" name=\"filter\"" + routeChecked(route.filterEnabled) + "> 开启正则过滤（开启后未匹配消息不推送）</label>";
+    card += "<p class=\"syntax\">支持：|、.、*、+、?、^、$、字符组 []、\\d、\\w、\\s；英文不区分大小写。</p>";
+    for (int ruleIndex = 0; ruleIndex < MAX_NOTIFICATION_RULES; ruleIndex++) {
+      const NotificationMatchRule& rule = route.rules[ruleIndex];
+      String prefix = "q" + String(ruleIndex) + "_";
+      card += "<div class=\"rule\"><label><input type=\"checkbox\" name=\"" + prefix + "en\"" + routeChecked(rule.enabled) + "> 启用规则 " + String(ruleIndex + 1) + "</label>";
+      card += "<div class=\"row\"><input type=\"text\" name=\"" + prefix + "name\" value=\"" + htmlEscape(rule.name) + "\" placeholder=\"规则名称\"><input type=\"text\" name=\"" + prefix + "pat\" value=\"" + htmlEscape(rule.pattern) + "\" placeholder=\"正则表达式\"></div>";
+      card += routeDestinationInputs(prefix, rule.emailMask, rule.pushMask);
+      card += "</div>";
+    }
+    card += "<button type=\"submit\">保存“" + String(notificationRouteName(routeType)) + "”规则</button></form>";
+    server.sendContent(card);
+  }
+  server.sendContent("</body></html>");
+  server.sendContent("");
+}
+
+void handleSaveNotificationRules() {
+  if (!checkAuth()) return;
+  int routeIndex = server.arg("route").toInt();
+  if (routeIndex < 0 || routeIndex >= NOTIFY_ROUTE_COUNT) {
+    server.send(400, "text/plain; charset=utf-8", "无效的规则分类");
+    return;
+  }
+
+  NotificationRouteConfig updated = config.notificationRoutes[routeIndex];
+  updated.filterEnabled = server.arg("filter") == "on";
+  updated.defaultEmailMask = 0;
+  updated.defaultPushMask = 0;
+  for (int i = 0; i < 3; i++) if (server.arg("de" + String(i)) == "on") updated.defaultEmailMask |= 1U << i;
+  for (int i = 0; i < MAX_PUSH_CHANNELS; i++) if (server.arg("dp" + String(i)) == "on") updated.defaultPushMask |= 1U << i;
+
+  int enabledRuleCount = 0;
+  for (int ruleIndex = 0; ruleIndex < MAX_NOTIFICATION_RULES; ruleIndex++) {
+    String prefix = "q" + String(ruleIndex) + "_";
+    NotificationMatchRule& rule = updated.rules[ruleIndex];
+    rule.enabled = server.arg(prefix + "en") == "on";
+    if (rule.enabled) enabledRuleCount++;
+    rule.name = server.arg(prefix + "name");
+    rule.pattern = server.arg(prefix + "pat");
+    rule.name.trim();
+    rule.pattern.trim();
+    if (rule.name.length() > 40) rule.name = rule.name.substring(0, 40);
+    if (rule.pattern.length() > 160) {
+      server.send(400, "text/html; charset=utf-8", "<meta charset=\"utf-8\"><h3>规则保存失败</h3><p>规则 " + String(ruleIndex + 1) + "：正则表达式不能超过160个字符。</p><p><a href=\"/notification_rules\">返回修改</a></p>");
+      return;
+    }
+    rule.emailMask = 0;
+    rule.pushMask = 0;
+    for (int i = 0; i < 3; i++) if (server.arg(prefix + "e" + String(i)) == "on") rule.emailMask |= 1U << i;
+    for (int i = 0; i < MAX_PUSH_CHANNELS; i++) if (server.arg(prefix + "p" + String(i)) == "on") rule.pushMask |= 1U << i;
+    if (rule.enabled) {
+      String error;
+      if (!notificationRegexValid(rule.pattern, &error)) {
+        server.send(400, "text/html; charset=utf-8", "<meta charset=\"utf-8\"><h3>规则保存失败</h3><p>规则 " + String(ruleIndex + 1) + "：" + htmlEscape(error) + "</p><p><a href=\"/notification_rules\">返回修改</a></p>");
+        return;
+      }
+    }
+  }
+
+  if (updated.filterEnabled && enabledRuleCount == 0) {
+    server.send(400, "text/html; charset=utf-8", "<meta charset=\"utf-8\"><h3>规则保存失败</h3><p>开启正则过滤时，至少需要启用一条匹配规则。</p><p><a href=\"/notification_rules\">返回修改</a></p>");
+    return;
+  }
+
+  config.notificationRoutes[routeIndex] = updated;
+  saveConfig();
+  String changedBody = "已更新推送规则分类：" + String(notificationRouteName((NotificationRouteType)routeIndex));
+  sendSystemNotification(NOTIFY_ROUTE_SYSTEM, "推送规则已更新", changedBody.c_str());
+  server.send(200, "text/html; charset=utf-8", "<meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"1;url=/notification_rules\"><h3>推送规则已保存</h3><p>正在返回……</p>");
 }
 
 void handleApConfigRoot() {

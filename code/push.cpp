@@ -2,6 +2,7 @@
 #include "web_handlers.h"
 #include "config.h"
 #include "phone_location.h"
+#include "notification_rules.h"
 #include <HTTPClient.h>
 #include <mbedtls/md.h>
 #include <base64.h>
@@ -61,6 +62,10 @@ static void sendEmailChannel(const String& server, int port, const String& user,
 
 // 发送邮件通知函数，支持3个完全独立的SMTP通道
 void sendEmailNotification(const char* subject, const char* body) {
+  sendEmailNotificationSelected(0x07, subject, body);
+}
+
+void sendEmailNotificationSelected(uint8_t emailMask, const char* subject, const char* body) {
   bool hasEmail = emailChannelValid(config.smtpServer, config.smtpUser, config.smtpPass, config.smtpSendTo) ||
                   emailChannelValid(config.smtpServer2, config.smtpUser2, config.smtpPass2, config.smtpSendTo2) ||
                   emailChannelValid(config.smtpServer3, config.smtpUser3, config.smtpPass3, config.smtpSendTo3);
@@ -68,9 +73,9 @@ void sendEmailNotification(const char* subject, const char* body) {
     logCaptureLn(String("邮件配置不完整，跳过发送"));
     return;
   }
-  sendEmailChannel(config.smtpServer, config.smtpPort, config.smtpUser, config.smtpPass, config.smtpSendTo, subject, body);
-  sendEmailChannel(config.smtpServer2, config.smtpPort2, config.smtpUser2, config.smtpPass2, config.smtpSendTo2, subject, body);
-  sendEmailChannel(config.smtpServer3, config.smtpPort3, config.smtpUser3, config.smtpPass3, config.smtpSendTo3, subject, body);
+  if (emailMask & 0x01) sendEmailChannel(config.smtpServer, config.smtpPort, config.smtpUser, config.smtpPass, config.smtpSendTo, subject, body);
+  if (emailMask & 0x02) sendEmailChannel(config.smtpServer2, config.smtpPort2, config.smtpUser2, config.smtpPass2, config.smtpSendTo2, subject, body);
+  if (emailMask & 0x04) sendEmailChannel(config.smtpServer3, config.smtpPort3, config.smtpUser3, config.smtpPass3, config.smtpSendTo3, subject, body);
 }
 
 static const char* pushTypeName(PushType type) {
@@ -279,6 +284,16 @@ String getSystemOverview() {
 }
 
 void sendNotifyAll(const char* subject, const char* body) {
+  sendSystemNotification(NOTIFY_ROUTE_OTHER, subject, body);
+}
+
+void sendSystemNotification(NotificationRouteType route, const char* subject, const char* body) {
+  String matchText = String(subject ? subject : "") + "\n" + String(body ? body : "");
+  NotificationTargets targets = resolveNotificationTargets(route, matchText);
+  if (!targets.emailMask && !targets.pushMask) {
+    logCaptureLn(String("Notification filtered: ") + notificationRouteName(route));
+    return;
+  }
   String raw = "通知原因：";
   raw += subject && subject[0] ? subject : "系统事件";
   raw += "\n";
@@ -286,8 +301,22 @@ void sendNotifyAll(const char* subject, const char* body) {
   String title = "系统通知：";
   title += subject && subject[0] ? subject : "系统事件";
   String msg = buildPushMessage(title.c_str(), raw.c_str(), "");
-  sendSMSToServer(title.c_str(), raw.c_str(), "");
-  sendEmailNotification(title.c_str(), msg.c_str());
+  if (targets.pushMask) sendSMSToServerSelected(targets.pushMask, title.c_str(), raw.c_str(), "");
+  if (targets.emailMask) sendEmailNotificationSelected(targets.emailMask, title.c_str(), msg.c_str());
+}
+
+void sendRoutedIncomingNotification(NotificationRouteType route, const char* subject, const char* sender, const char* message, const char* timestamp) {
+  String matchText = String(sender ? sender : "") + "\n" + String(message ? message : "");
+  NotificationTargets targets = resolveNotificationTargets(route, matchText);
+  if (!targets.emailMask && !targets.pushMask) {
+    logCaptureLn(String("Incoming notification filtered: ") + notificationRouteName(route));
+    return;
+  }
+  if (targets.pushMask) sendSMSToServerSelected(targets.pushMask, sender, message, timestamp);
+  if (targets.emailMask) {
+    String mailBody = buildPushMessage(sender, message, timestamp);
+    sendEmailNotificationSelected(targets.emailMask, subject, mailBody.c_str());
+  }
 }
 
 // URL编码辅助函数
@@ -603,6 +632,10 @@ bool sendToChannel(const PushChannel& channel, const char* sender, const char* m
 
 // 发送短信到所有启用的推送通道
 void sendSMSToServer(const char* sender, const char* message, const char* timestamp) {
+  sendSMSToServerSelected(0x1F, sender, message, timestamp);
+}
+
+void sendSMSToServerSelected(uint8_t pushMask, const char* sender, const char* message, const char* timestamp) {
   if (WiFi.status() != WL_CONNECTED) {
     logCaptureLn(String("WiFi未连接，跳过推送"));
     return;
@@ -610,7 +643,7 @@ void sendSMSToServer(const char* sender, const char* message, const char* timest
   
   bool hasEnabledChannel = false;
   for (int i = 0; i < MAX_PUSH_CHANNELS; i++) {
-    if (isPushChannelValid(config.pushChannels[i])) {
+    if ((pushMask & (1U << i)) && isPushChannelValid(config.pushChannels[i])) {
       hasEnabledChannel = true;
       break;
     }
@@ -628,7 +661,7 @@ void sendSMSToServer(const char* sender, const char* message, const char* timest
 
   logCaptureLn(String("\n=== 开始多通道推送 ==="));
   for (int i = 0; i < MAX_PUSH_CHANNELS; i++) {
-    if (isPushChannelValid(config.pushChannels[i])) {
+    if ((pushMask & (1U << i)) && isPushChannelValid(config.pushChannels[i])) {
       bool ok = sendToChannel(config.pushChannels[i], sender, pushMessage.c_str(), pushTime.c_str());
       if (!ok) {
         failed[i] = true;
@@ -642,7 +675,7 @@ void sendSMSToServer(const char* sender, const char* message, const char* timest
     delay(3000);
     hasFailed = false;
     for (int i = 0; i < MAX_PUSH_CHANNELS; i++) {
-      if (failed[i] && isPushChannelValid(config.pushChannels[i])) {
+      if ((pushMask & (1U << i)) && failed[i] && isPushChannelValid(config.pushChannels[i])) {
         bool ok = sendToChannel(config.pushChannels[i], sender, pushMessage.c_str(), pushTime.c_str());
         failed[i] = !ok;
         if (!ok) hasFailed = true;
